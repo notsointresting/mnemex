@@ -61,13 +61,16 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _serve(db_path: str) -> int:
-    """Run the MCP server over stdio."""
+    """Run the MCP server over stdio.
+
+    ``FastMCP.run`` is synchronous and manages its own event loop, so it must
+    be called directly (not wrapped in ``asyncio.run``).
+    """
     from mnemex.server import create_server
 
     server = create_server(db_path)
     try:
-        import asyncio
-        asyncio.run(server.mcp.run(transport="stdio"))
+        server.mcp.run(transport="stdio")
     except KeyboardInterrupt:
         pass
     finally:
