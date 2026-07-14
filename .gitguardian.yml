@@ -1,0 +1,9 @@
+version: 2
+
+# The test_security.py file contains INTENTIONAL fake secrets used to verify
+# that mnemex's security module correctly strips them. These are not real
+# credentials — they are test fixtures.
+secret:
+  ignored-paths:
+    - "tests/test_security.py"
+    - "tests/test_security.py/**"

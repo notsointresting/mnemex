@@ -1,0 +1,73 @@
+[build-system]
+requires = ["setuptools==83.0.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mnemex"
+version = "0.1.0"
+description = "Anchored memory for AI coding agents — MCP server that binds decisions to code symbols and delivers context just-in-time"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+authors = [
+    { name = "mnemex contributors" },
+]
+keywords = [
+    "mcp",
+    "model-context-protocol",
+    "ai-agent",
+    "coding-agent",
+    "memory",
+    "context",
+    "claude-code",
+    "cursor",
+    "codex",
+    "gemini-cli",
+    "windsurf",
+    "sqlite",
+    "local-first",
+    "decision-anchoring",
+    "token-optimization",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Software Development :: Quality Assurance",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Typing :: Typed",
+]
+dependencies = [
+    "fastmcp==3.4.4",
+    "sqlite-vec==0.1.9",
+]
+
+[project.urls]
+Homepage = "https://github.com/nkm-ets/mnemex"
+Documentation = "https://github.com/nkm-ets/mnemex#readme"
+Repository = "https://github.com/nkm-ets/mnemex"
+Issues = "https://github.com/nkm-ets/mnemex/issues"
+Changelog = "https://github.com/nkm-ets/mnemex/releases"
+
+[project.scripts]
+mnemex = "mnemex.__main__:main"
+
+[project.optional-dependencies]
+dev = [
+    "pytest==9.1.1",
+    "ruff==0.15.21",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py310"

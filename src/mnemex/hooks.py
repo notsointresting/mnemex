@@ -1,0 +1,175 @@
+"""Phase 4 — JIT hook injection (SessionStart, PreToolUse, Stop).
+
+Hooks deliver anchored context just-in-time without requiring the agent to
+explicitly call a tool. They degrade gracefully when the agent runtime does not
+support hooks (the same logic is available through the equivalent MCP tools).
+
+Token caps are hard limits enforced via the retrieval module's governor:
+- SessionStart: <=800 tokens
+- PreToolUse (JIT ``context_for``): <=400 tokens
+"""
+
+from __future__ import annotations
+
+from collections.abc import Sequence
+from dataclasses import dataclass
+from pathlib import Path
+
+from mnemex.retrieval import Embedder, estimate_tokens, recall
+from mnemex.storage import Memory, Storage
+
+__all__ = [
+    "HookResult",
+    "session_start",
+    "pre_tool_use",
+    "stop_capture",
+    "SESSION_TOKEN_CAP",
+    "JIT_TOKEN_CAP",
+]
+
+SESSION_TOKEN_CAP = 800
+JIT_TOKEN_CAP = 400
+
+
+@dataclass(frozen=True, slots=True)
+class HookResult:
+    """Result of a hook invocation, ready for injection into agent context."""
+
+    content: str
+    used_tokens: int
+    budget_tokens: int
+    memory_count: int
+    mode: str
+
+
+def session_start(
+    storage: Storage,
+    *,
+    scopes: Sequence[str] = ("project-shared",),
+    embedder: Embedder | None = None,
+    max_tokens: int = SESSION_TOKEN_CAP,
+) -> HookResult:
+    """SessionStart hook: produce a brief of the most important memories.
+
+    Respects the hard 800-token cap. Returns the highest-importance memories
+    ranked by the token governor, formatted as a concise brief.
+    """
+    cap = min(max_tokens, SESSION_TOKEN_CAP)
+    memories = storage.list_memories(scopes)
+    if not memories:
+        return HookResult(
+            content="",
+            used_tokens=0,
+            budget_tokens=cap,
+            memory_count=0,
+            mode="bm25-only" if embedder is None else "hybrid",
+        )
+
+    # Rank by importance descending, then recency
+    ranked = sorted(
+        memories,
+        key=lambda m: (-m.importance, m.created_at),
+    )
+
+    included: list[Memory] = []
+    used = 0
+    for mem in ranked:
+        combined = mem.content
+        if mem.rationale:
+            combined = f"{mem.content}\n{mem.rationale}"
+        cost = estimate_tokens(combined)
+        if used + cost <= cap:
+            included.append(mem)
+            used += cost
+
+    lines = _format_brief(included)
+    return HookResult(
+        content="\n".join(lines),
+        used_tokens=used,
+        budget_tokens=cap,
+        memory_count=len(included),
+        mode="bm25-only" if embedder is None else "hybrid",
+    )
+
+
+def pre_tool_use(
+    storage: Storage,
+    path: str,
+    *,
+    scopes: Sequence[str] = ("project-shared",),
+    embedder: Embedder | None = None,
+    max_tokens: int = JIT_TOKEN_CAP,
+) -> HookResult:
+    """PreToolUse hook: inject context for the file about to be edited.
+
+    Respects the hard 400-token cap. Uses the file stem as a recall query to
+    find anchored memories relevant to this specific file.
+    """
+    cap = min(max_tokens, JIT_TOKEN_CAP)
+    filename = Path(path).stem
+
+    # Use recall with the file stem as the query — this finds memories whose
+    # content mentions the file/symbol names
+    result = recall(
+        storage,
+        filename,
+        scopes=list(scopes),
+        embedder=embedder,
+        limit=10,
+        max_tokens=cap,
+    )
+
+    lines: list[str] = []
+    for sm in result.included:
+        line = f"- {sm.memory.content}"
+        if sm.memory.anchor_node_id:
+            line += f" [anchor: {sm.memory.anchor_node_id}]"
+        lines.append(line)
+
+    return HookResult(
+        content="\n".join(lines),
+        used_tokens=result.used_tokens,
+        budget_tokens=cap,
+        memory_count=len(result.included),
+        mode=result.mode,
+    )
+
+
+def stop_capture(
+    storage: Storage,
+    content: str,
+    *,
+    scope: str = "project-shared",
+    source: str = "agent",
+) -> str | None:
+    """Stop hook: capture a decision or note from the agent's completed action.
+
+    This is a simple capture path; the agent can call ``remember`` directly for
+    richer anchoring. Returns the memory_id if captured, None if content is
+    empty.
+    """
+    if not content or not content.strip():
+        return None
+
+    from mnemex.anchors import remember
+
+    memory = remember(
+        storage,
+        content.strip(),
+        scope=scope,
+        source=source,
+    )
+    return memory.id
+
+
+def _format_brief(memories: list[Memory]) -> list[str]:
+    """Format a list of memories into a concise brief."""
+    lines: list[str] = []
+    for mem in memories:
+        line = f"- {mem.content}"
+        if mem.rationale:
+            line += f" ({mem.rationale})"
+        if mem.anchor_node_id:
+            line += f" [anchor: {mem.anchor_node_id}]"
+        lines.append(line)
+    return lines
