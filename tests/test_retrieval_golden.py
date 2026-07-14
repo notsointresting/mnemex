@@ -16,6 +16,8 @@ import math
 import random
 import re
 
+import pytest
+
 from mnemex.anchors import remember
 from mnemex.retrieval import (
     bm25_candidates,
@@ -28,6 +30,12 @@ from mnemex.retrieval import (
 from mnemex.storage import Memory, Storage
 
 _DIM = 384
+
+with Storage() as _probe:
+    VEC_AVAILABLE = _probe.vec_available
+_needs_vec = pytest.mark.skipif(
+    not VEC_AVAILABLE, reason="sqlite-vec extension unavailable (no-ML mode)"
+)
 
 # Disjoint concept -> synonym map. Each concept occupies one fixed dimension,
 # so two texts are "near" iff they share a concept, regardless of exact words.
@@ -149,6 +157,7 @@ def _ranked_ids_fused(storage: Storage, query: str) -> list[str]:
     return [memory.id for memory, _score, _signals in fused]
 
 
+@_needs_vec
 def test_rrf_beats_either_signal_alone_on_labeled_set() -> None:
     with Storage() as storage:
         _build_golden_db(storage)
@@ -246,6 +255,7 @@ def test_token_cap_never_exceeded_under_fuzz() -> None:
                 assert one_cost <= cap
 
 
+@_needs_vec
 def test_recall_is_deterministic_in_both_modes() -> None:
     def signature(result_included: object) -> list[tuple[str, float, int, tuple[str, ...]]]:
         return [

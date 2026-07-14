@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import sqlite3
 from collections.abc import Collection
 from dataclasses import dataclass
@@ -59,10 +60,6 @@ _SCHEMA = (
     )
     """,
     """
-    CREATE VIRTUAL TABLE IF NOT EXISTS memories_vec
-    USING vec0(embedding FLOAT[384])
-    """,
-    """
     CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts
     USING fts5(
         content,
@@ -93,6 +90,13 @@ _SCHEMA = (
     END
     """,
 )
+
+# Created only when the sqlite-vec extension is available. It is an optional
+# semantic upgrade: without it, mnemex runs in BM25/FTS5-only ("no-ML") mode.
+_VEC_SCHEMA = """
+    CREATE VIRTUAL TABLE IF NOT EXISTS memories_vec
+    USING vec0(embedding FLOAT[384])
+    """
 
 
 @dataclass(frozen=True, slots=True)
@@ -127,12 +131,22 @@ class Memory:
 class Storage:
     def __init__(self, path: str | Path = ":memory:") -> None:
         self._connection: sqlite3.Connection | None = sqlite3.connect(str(path))
+        self._vec_available = False
         try:
-            self._load_sqlite_vec()
+            self._vec_available = self._load_sqlite_vec()
             self._initialize()
         except BaseException:
             self.close()
             raise
+
+    @property
+    def vec_available(self) -> bool:
+        """True when the sqlite-vec vector backend loaded.
+
+        When False, ``memories_vec`` does not exist and mnemex operates in
+        BM25/FTS5-only ("no-ML") mode. Retrieval degrades gracefully.
+        """
+        return self._vec_available
 
     @property
     def connection(self) -> sqlite3.Connection:
@@ -272,19 +286,40 @@ class Storage:
             )
         return cursor.rowcount > 0
 
-    def _load_sqlite_vec(self) -> None:
+    def _load_sqlite_vec(self) -> bool:
+        """Load the sqlite-vec extension if the platform supports it.
+
+        Returns ``True`` when the vector backend is available. When the stdlib
+        ``sqlite3`` was built without loadable-extension support (some macOS
+        Python builds) or the extension otherwise fails to load, returns
+        ``False`` and mnemex runs in BM25/FTS5-only ("no-ML") mode. FTS5 is
+        compiled into SQLite and needs no extension, so keyword retrieval
+        always works. Set ``MNEMEX_NO_VEC=1`` to force no-ML mode.
+        """
+        if os.environ.get("MNEMEX_NO_VEC"):
+            return False
+
         connection = self.connection
         toggle_extension_loading = getattr(
             connection, "enable_load_extension", None
         )
         if toggle_extension_loading is None:
-            raise RuntimeError("SQLite extension loading is unavailable")
+            return False
 
-        toggle_extension_loading(True)
+        try:
+            toggle_extension_loading(True)
+        except (sqlite3.OperationalError, sqlite3.NotSupportedError, AttributeError):
+            return False
         try:
             sqlite_vec.load(connection)
+        except Exception:
+            return False
         finally:
-            toggle_extension_loading(False)
+            try:
+                toggle_extension_loading(False)
+            except Exception:
+                pass
+        return True
 
     def _initialize(self) -> None:
         row = self.connection.execute("PRAGMA user_version").fetchone()
@@ -295,6 +330,8 @@ class Storage:
         with self.connection:
             for statement in _SCHEMA:
                 self.connection.execute(statement)
+            if self._vec_available:
+                self.connection.execute(_VEC_SCHEMA)
             self.connection.execute("PRAGMA user_version = 1")
 
     @staticmethod

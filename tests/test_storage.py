@@ -7,6 +7,12 @@ import sqlite_vec
 
 from mnemex.storage import Memory, Node, Storage
 
+with Storage() as _probe:
+    VEC_AVAILABLE = _probe.vec_available
+_needs_vec = pytest.mark.skipif(
+    not VEC_AVAILABLE, reason="sqlite-vec extension unavailable (no-ML mode)"
+)
+
 
 def make_node(
     node_id: str = "node-1",
@@ -98,6 +104,9 @@ def test_schema_is_complete_and_reopen_is_idempotent(tmp_path: Path) -> None:
         "memories_vec": ["rowid", "embedding"],
         "memories_fts": ["content", "rationale", "tags"],
     }
+    if not VEC_AVAILABLE:
+        # No-ML mode: the optional vector table is not created.
+        del expected_columns["memories_vec"]
 
     with Storage(database) as storage:
         assert storage.connection.execute(
@@ -172,6 +181,7 @@ def test_memory_crud_keeps_fts_synchronized() -> None:
         assert storage.delete_memory(memory.id) is False
 
 
+@_needs_vec
 def test_memories_vec_exists_and_accepts_384_dimension_vectors() -> None:
     with Storage() as storage:
         embedding = sqlite_vec.serialize_float32([0.0] * 384)

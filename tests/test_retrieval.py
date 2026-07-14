@@ -25,6 +25,12 @@ from mnemex.storage import Memory, Storage
 
 _DIM = 384
 
+with Storage() as _probe:
+    VEC_AVAILABLE = _probe.vec_available
+_needs_vec = pytest.mark.skipif(
+    not VEC_AVAILABLE, reason="sqlite-vec extension unavailable (no-ML mode)"
+)
+
 
 def synthetic_embedder(text: str) -> list[float]:
     """Deterministic, ML-free bag-of-hashed-words embedding."""
@@ -147,6 +153,7 @@ def test_bm25_candidates_are_scope_filtered_and_ranked() -> None:
         assert [memory.id for memory, _ in private] == ["priv"]
 
 
+@_needs_vec
 def test_determinism_same_query_twice_identical_order() -> None:
     with Storage() as storage:
         add(storage, "a", "alpha beta gamma alpha")
@@ -227,6 +234,7 @@ def test_no_cap_includes_everything_and_reports_total() -> None:
 # --------------------------------------------------------------------------- #
 
 
+@_needs_vec
 def test_scope_isolation_holds_across_bm25_and_vector_paths() -> None:
     with Storage() as storage:
         pub = add(storage, "pub", "vector alpha beta gamma")
@@ -275,6 +283,7 @@ def test_scope_isolation_holds_across_bm25_and_vector_paths() -> None:
 # --------------------------------------------------------------------------- #
 
 
+@_needs_vec
 def test_ensure_embeddings_is_idempotent_and_scope_bounded() -> None:
     with Storage() as storage:
         add(storage, "p1", "alpha one")
@@ -320,6 +329,7 @@ def test_ensure_embeddings_is_idempotent_and_scope_bounded() -> None:
 # --------------------------------------------------------------------------- #
 
 
+@_needs_vec
 def test_wrong_embedding_dimension_raises_everywhere() -> None:
     with Storage() as storage:
         add(storage, "m", "alpha beta")
@@ -361,7 +371,7 @@ def test_empty_or_garbage_query_returns_empty_without_crashing(
 
         hybrid = recall(storage, query, embedder=synthetic_embedder)
         assert hybrid.included == ()
-        assert hybrid.mode == "hybrid"
+        assert hybrid.mode == ("hybrid" if VEC_AVAILABLE else "bm25-only")
 
         assert bm25_candidates(
             storage, query, scopes=("project-shared",), limit=10

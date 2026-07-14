@@ -168,6 +168,8 @@ def ensure_embeddings(
     """
 
     scope_values = _normalize_scopes(scopes)
+    if not storage.vec_available:
+        return 0
     placeholders = ", ".join("?" for _ in scope_values)
     rows = storage.connection.execute(
         f"""
@@ -267,7 +269,7 @@ def vector_candidates(
 
     scope_values = _normalize_scopes(scopes)
     query = _validate_embedding(query_embedding)
-    if limit <= 0:
+    if not storage.vec_available or limit <= 0:
         return []
 
     scope_ph = ", ".join("?" for _ in scope_values)
@@ -386,7 +388,10 @@ def recall(
     scope_values = _normalize_scopes(scopes)
     if max_tokens is not None and max_tokens < 0:
         raise ValueError("max_tokens must be non-negative or None")
-    mode = "bm25-only" if embedder is None else "hybrid"
+    mode = (
+        "hybrid" if (embedder is not None and storage.vec_available)
+        else "bm25-only"
+    )
 
     terms = _extract_terms(query)
     if not terms or limit <= 0:
@@ -405,7 +410,7 @@ def recall(
             storage, query, scopes=scope_values, limit=limit
         )
     }
-    if embedder is not None:
+    if embedder is not None and storage.vec_available:
         # Idempotent, additive population of missing vector rows for these
         # scopes. ponytail: recomputes the missing set on each hybrid recall;
         # upgrade path is event-driven population when a write API lands.
