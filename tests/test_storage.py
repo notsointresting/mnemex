@@ -185,9 +185,8 @@ def test_memories_vec_exists_and_accepts_384_dimension_vectors() -> None:
             """
             SELECT rowid, distance
             FROM memories_vec
-            WHERE embedding MATCH ?
+            WHERE embedding MATCH ? AND k = 1
             ORDER BY distance
-            LIMIT 1
             """,
             (embedding,),
         ).fetchone()
