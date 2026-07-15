@@ -177,10 +177,23 @@ and optional AGENTS.md text. It does not copy a raw SQLite database.
 
 ## Security And Boundaries
 
-- Secrets, common PII, and `<private>` sections are sanitized before storage.
-- Session briefs are capped at 800 estimated tokens; JIT context is capped at
-  400.
-- Local mode makes no OpenAI request.
+- **Write-time redaction.** Secrets and common PII are stripped before
+  storage: passwords and secret assignments, AWS/GitHub/OpenAI/Anthropic/
+  Google/Stripe/Slack credentials, PEM private keys, JWTs, bearer tokens,
+  connection strings, hex tokens, emails, phone numbers, and routable IP
+  addresses. `<private>...</private>` sections are removed entirely.
+  Loopback addresses and `commit <sha>` references are exempt so normal
+  engineering text survives unmangled.
+- **Zero telemetry.** Local mode makes no network call and never imports the
+  `openai` package; the semantic judge is opt-in.
+- **Inspectable remote payload.** `mnemex check ... --show-payload` prints the
+  exact sanitized, bounded JSON that would be sent to a remote judge, its
+  redaction count, and whether anything was actually sent. Every guard run
+  records the payload hash and token count.
+- **Bounded context.** Session briefs are capped at 800 estimated tokens; JIT
+  context at 400; guard evidence at 800.
+- **Honest self-check.** `mnemex doctor` probes the redaction pipeline with
+  password, provider-key, and private-tag vectors before reporting ready.
 - Local HTTP MCP has no built-in authentication. Bind it to `127.0.0.1` or use
   an authenticated gateway before exposing it outside the machine.
 - Bundle import validates its contents and reports current anchor freshness.

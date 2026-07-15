@@ -82,3 +82,21 @@ def test_evidence_hard_caps_the_entire_serialized_remote_payload() -> None:
         assert bundle.used_tokens <= 8
         assert estimate_tokens(bundle.payload) <= 8
         assert bundle.as_payload() in ({}, {"path": "", "patch_summary": "", "decisions": []})
+
+
+def test_evidence_reports_redaction_count() -> None:
+    with Storage() as storage:
+        secret = "AKIA" + "IOSFODNN7EXAMPLE"
+        remember(storage, "auth decision")
+
+        bundle = build_guard_evidence(
+            storage,
+            "src/auth.py",
+            f"Patch mentions {secret} and password=" + "hunter2secret",
+        )
+
+        assert bundle.redaction_count >= 2
+        assert secret not in bundle.payload
+
+        clean = build_guard_evidence(storage, "src/auth.py", "harmless patch")
+        assert clean.redaction_count == 0

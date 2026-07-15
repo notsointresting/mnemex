@@ -55,6 +55,7 @@ class ProposedChangeResult:
                 "tokens": self.evidence.used_tokens,
                 "budget_tokens": self.evidence.budget_tokens,
                 "payload_hash": _payload_hash(self.evidence),
+                "redaction_count": self.evidence.redaction_count,
             },
         }
 

@@ -45,6 +45,7 @@ class EvidenceBundle:
     used_tokens: int
     budget_tokens: int
     payload: str
+    redaction_count: int = 0
 
     def as_payload(self) -> dict[str, object]:
         """Return precisely the sanitized payload eligible for remote use."""
@@ -151,6 +152,7 @@ def build_guard_evidence(
         used_tokens=estimate_tokens(payload),
         budget_tokens=max_tokens,
         payload=payload,
+        redaction_count=redactions.count,
     )
 
 

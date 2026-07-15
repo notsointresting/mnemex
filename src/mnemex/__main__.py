@@ -107,6 +107,11 @@ def main(argv: list[str] | None = None) -> int:
     check_parser.add_argument("--scopes", default="project-shared")
     check_parser.add_argument("--max-evidence-tokens", type=int, default=None)
     check_parser.add_argument("--enforce-constraints", action="store_true", help="Block fresh violations of explicit deterministic constraints")
+    check_parser.add_argument(
+        "--show-payload",
+        action="store_true",
+        help="Print the exact sanitized evidence payload eligible for a remote judge",
+    )
 
     reconcile_parser = sub.add_parser("reconcile", help="Reconcile a stale decision")
     reconcile_parser.add_argument("memory_id")
@@ -169,6 +174,7 @@ def main(argv: list[str] | None = None) -> int:
             args.scopes,
             args.max_evidence_tokens,
             args.enforce_constraints,
+            show_payload=args.show_payload,
         )
     elif args.command == "reconcile":
         return _reconcile(args.db, args.memory_id, args.changed_symbol, args.diff)
@@ -445,6 +451,8 @@ def _check(
     scopes: str,
     max_evidence_tokens: int | None,
     enforce_constraints: bool,
+    *,
+    show_payload: bool = False,
 ) -> int:
     from mnemex.config import MnemexConfig
     from mnemex.decision_guard import check_proposed_change
@@ -456,16 +464,23 @@ def _check(
         max(max_evidence_tokens, 0), config.max_evidence_tokens
     )
     with Storage(db_path) as storage:
+        judge = create_semantic_judge(config)
         result = check_proposed_change(
             storage,
             path,
             patch_summary,
             scopes=_scope_values(scopes),
             max_evidence_tokens=cap,
-            judge=create_semantic_judge(config),
+            judge=judge,
             enforce_constraints=enforce_constraints,
         )
-        _print_json(result.as_dict())
+        output = result.as_dict()
+        if show_payload:
+            # The exact sanitized JSON eligible for a remote judge, and
+            # whether this run actually sent it anywhere.
+            output["payload"] = result.evidence.as_payload()
+            output["payload_sent_to_provider"] = judge is not None
+        _print_json(output)
     return 2 if result.blocked else 0
 
 

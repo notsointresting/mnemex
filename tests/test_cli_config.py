@@ -102,3 +102,28 @@ def test_init_discovers_project_directory_and_creates_default_brain(tmp_path, ca
     assert payload["index"]["nodes_upserted"] >= 1
     assert payload["fts5_ready"] is True
     assert payload["redaction_probe_passed"] is True
+
+
+def test_check_show_payload_prints_sanitized_evidence(tmp_path, capsys) -> None:
+    from mnemex.__main__ import main
+
+    db = str(tmp_path / "cli-check.sqlite3")
+    secret_value = "hunter2" + "cliprobe"
+    code = main(
+        [
+            "check",
+            "src/auth.py",
+            f"use password={secret_value} for sessions",
+            "--db",
+            db,
+            "--show-payload",
+        ]
+    )
+    out = capsys.readouterr().out
+    payload = json.loads(out)
+
+    assert code in (0, 2)
+    assert "payload" in payload
+    assert secret_value not in out
+    assert payload["payload_summary"]["redaction_count"] >= 1
+    assert payload["payload_sent_to_provider"] is False
