@@ -43,7 +43,7 @@ classifiers = [
 ]
 dependencies = [
     "fastmcp==3.4.4",
-    "sqlite-vec==0.1.9",
+    "sqlite-vec>=0.1.9,<0.2",
 ]
 
 [project.urls]
