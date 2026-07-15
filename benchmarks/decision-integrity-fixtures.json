@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "description": "Offline synthetic fixtures for deterministic decision-integrity evaluation. Each case is evaluated by local Mnemex APIs; this dataset does not measure production-repository prevalence or remote semantic-model quality.",
+  "cases": [
+    {"id": "contradiction-01", "category": "direct_contradiction", "phrase": "server sessions", "patch": "Add server sessions to authenticate.", "expected_violations": 1},
+    {"id": "contradiction-02", "category": "direct_contradiction", "phrase": "plaintext passwords", "patch": "Persist plaintext passwords for migration.", "expected_violations": 1},
+    {"id": "contradiction-03", "category": "direct_contradiction", "phrase": "synchronous network calls", "patch": "Use synchronous network calls in request middleware.", "expected_violations": 1},
+    {"id": "contradiction-04", "category": "direct_contradiction", "phrase": "global mutable state", "patch": "Introduce global mutable state for feature flags.", "expected_violations": 1},
+    {"id": "contradiction-05", "category": "direct_contradiction", "phrase": "unbounded retries", "patch": "Enable unbounded retries in the worker.", "expected_violations": 1},
+    {"id": "compatible-01", "category": "compatible_change", "phrase": "server sessions", "patch": "Rotate signed cookies in authenticate.", "expected_violations": 0},
+    {"id": "compatible-02", "category": "compatible_change", "phrase": "plaintext passwords", "patch": "Hash credentials with an approved password hasher.", "expected_violations": 0},
+    {"id": "compatible-03", "category": "compatible_change", "phrase": "synchronous network calls", "patch": "Queue a background request after validation.", "expected_violations": 0},
+    {"id": "compatible-04", "category": "compatible_change", "phrase": "global mutable state", "patch": "Pass feature flags through request-scoped configuration.", "expected_violations": 0},
+    {"id": "compatible-05", "category": "compatible_change", "phrase": "unbounded retries", "patch": "Retry requests at most three times with backoff.", "expected_violations": 0},
+    {"id": "supersession-01", "category": "legitimate_supersession", "old": "Use SHA-1 request signatures.", "new": "Use SHA-256 request signatures."},
+    {"id": "supersession-02", "category": "legitimate_supersession", "old": "Store cache keys by user id.", "new": "Store cache keys by tenant and user id."},
+    {"id": "supersession-03", "category": "legitimate_supersession", "old": "Send telemetry synchronously.", "new": "Queue telemetry through the local outbox."},
+    {"id": "supersession-04", "category": "legitimate_supersession", "old": "Allow one deployment region.", "new": "Support two deployment regions with explicit failover."},
+    {"id": "freshness-01", "category": "freshness", "state": "fresh"},
+    {"id": "freshness-02", "category": "freshness", "state": "fresh"},
+    {"id": "freshness-03", "category": "stale_orphaned", "state": "stale"},
+    {"id": "freshness-04", "category": "stale_orphaned", "state": "stale"},
+    {"id": "freshness-05", "category": "stale_orphaned", "state": "orphaned"},
+    {"id": "freshness-06", "category": "stale_orphaned", "state": "orphaned"},
+    {"id": "mistake-01", "category": "repeated_mistake", "symbol": "authenticate", "failure": "CSRF validation was removed", "action": "Change CSRF validation in authenticate."},
+    {"id": "mistake-02", "category": "repeated_mistake", "symbol": "authorize", "failure": "Role checks were bypassed", "action": "Edit authorize role checks."},
+    {"id": "mistake-03", "category": "repeated_mistake", "symbol": "serialize_event", "failure": "Schema version was omitted", "action": "Change serialize_event schema version."},
+    {"id": "mistake-04", "category": "repeated_mistake", "symbol": "migrate_database", "failure": "Migration was not reversible", "action": "Edit migrate_database rollback plan."},
+    {"id": "mistake-05", "category": "repeated_mistake", "symbol": "validate_webhook", "failure": "Signature verification was skipped", "action": "Change validate_webhook signature verification."}
+  ]
+}
