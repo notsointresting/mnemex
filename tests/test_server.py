@@ -272,3 +272,21 @@ def test_remember_event_populates_local_embeddings_when_available() -> None:
         ).fetchone()
     finally:
         server.close()
+
+
+def test_recall_memories_clamps_oversized_token_budget() -> None:
+    server = create_server(":memory:")
+    try:
+        asyncio.run(
+            server.mcp.call_tool(
+                "remember_decision", {"content": "auth stays stateless"}
+            )
+        )
+        result = asyncio.run(
+            server.mcp.call_tool(
+                "recall_memories", {"query": "auth", "max_tokens": 100_000}
+            )
+        )[1]
+        assert result["budget_tokens"] <= 800
+    finally:
+        server.close()

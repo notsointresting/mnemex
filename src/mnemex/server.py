@@ -114,6 +114,9 @@ class MnemexServer:
         ) -> dict[str, Any]:
             """Retrieve relevant memories via hybrid BM25+vector search."""
             scope_list = [s.strip() for s in scopes.split(",")]
+            # Every retrieval surface is hard-capped; recall is no exception.
+            if max_tokens is not None:
+                max_tokens = min(max(max_tokens, 0), 800)
             try:
                 result = recall(
                     storage,
@@ -199,7 +202,9 @@ class MnemexServer:
                     ),
                     enforce_constraints=enforce_constraints,
                 )
-                from mnemex.constraints import enforce_constraints
+                from mnemex.constraints import (
+                    enforce_constraints as list_constraint_violations,
+                )
 
                 response = result.as_dict()
                 response["constraint_violations"] = [
@@ -209,7 +214,7 @@ class MnemexServer:
                         "phrase": violation.phrase,
                         "message": violation.message,
                     }
-                    for violation in enforce_constraints(
+                    for violation in list_constraint_violations(
                         storage, patch_summary, scopes=tuple(scope.strip() for scope in scopes.split(","))
                     )
                 ]
