@@ -15,7 +15,8 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from mnemex.retrieval import Embedder, estimate_tokens, recall
+from mnemex.retrieval import Embedder, estimate_tokens, govern_memories, recall
+from mnemex.security import RedactionLog, sanitize
 from mnemex.storage import Memory, Storage
 
 __all__ = [
@@ -54,7 +55,7 @@ def session_start(
     Respects the hard 800-token cap. Returns the highest-importance memories
     ranked by the token governor, formatted as a concise brief.
     """
-    cap = min(max_tokens, SESSION_TOKEN_CAP)
+    cap = min(max(max_tokens, 0), SESSION_TOKEN_CAP)
     memories = storage.list_memories(scopes)
     if not memories:
         return HookResult(
@@ -105,32 +106,43 @@ def pre_tool_use(
     Respects the hard 400-token cap. Uses the file stem as a recall query to
     find anchored memories relevant to this specific file.
     """
-    cap = min(max_tokens, JIT_TOKEN_CAP)
+    cap = min(max(max_tokens, 0), JIT_TOKEN_CAP)
     filename = Path(path).stem
 
-    # Use recall with the file stem as the query — this finds memories whose
-    # content mentions the file/symbol names
-    result = recall(
-        storage,
-        filename,
-        scopes=list(scopes),
-        embedder=embedder,
-        limit=10,
-        max_tokens=cap,
-    )
+    anchored_memories = storage.list_memories_by_anchor_file(path, scopes)
+    if anchored_memories:
+        result = govern_memories(
+            anchored_memories,
+            max_tokens=cap,
+            mode="anchor-file",
+        )
+    else:
+        result = recall(
+            storage,
+            filename,
+            scopes=list(scopes),
+            embedder=embedder,
+            limit=10,
+            max_tokens=cap,
+        )
 
     lines: list[str] = []
+    used_tokens = 0
     for sm in result.included:
         line = f"- {sm.memory.content}"
         if sm.memory.anchor_node_id:
             line += f" [anchor: {sm.memory.anchor_node_id}]"
-        lines.append(line)
+        candidate = "\n".join([*lines, line])
+        candidate_tokens = estimate_tokens(candidate)
+        if candidate_tokens <= cap:
+            lines.append(line)
+            used_tokens = candidate_tokens
 
     return HookResult(
         content="\n".join(lines),
-        used_tokens=result.used_tokens,
+        used_tokens=used_tokens,
         budget_tokens=cap,
-        memory_count=len(result.included),
+        memory_count=len(lines),
         mode=result.mode,
     )
 
@@ -153,11 +165,16 @@ def stop_capture(
 
     from mnemex.anchors import remember
 
+    redactions = RedactionLog()
+    clean_content = sanitize(
+        content.strip(), field_name="content", log=redactions
+    )
     memory = remember(
         storage,
-        content.strip(),
+        clean_content,
         scope=scope,
         source=source,
+        redaction_log=redactions,
     )
     return memory.id
 

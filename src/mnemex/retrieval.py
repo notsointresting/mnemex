@@ -27,6 +27,7 @@ __all__ = [
     "bm25_candidates",
     "vector_candidates",
     "rrf_fuse",
+    "govern_memories",
     "recall",
 ]
 
@@ -357,6 +358,42 @@ def rrf_fuse(
     ]
     fused.sort(key=lambda item: (-item[1], item[0].id))
     return fused
+
+
+def govern_memories(
+    memories: Sequence[Memory],
+    *,
+    max_tokens: int | None,
+    mode: str,
+) -> RecallResult:
+    """Apply the standard token governor to an already-selected memory set."""
+    if max_tokens is not None and max_tokens < 0:
+        raise ValueError("max_tokens must be non-negative or None")
+
+    included: list[ScoredMemory] = []
+    dropped: list[ScoredMemory] = []
+    used_tokens = 0
+    for rank, memory in enumerate(memories, start=1):
+        scored = ScoredMemory(
+            memory=memory,
+            score=1.0 / rank,
+            rank=rank,
+            signals=("anchor-file",),
+        )
+        cost = estimate_tokens(_combine_text(memory.content, memory.rationale))
+        if max_tokens is None or used_tokens + cost <= max_tokens:
+            included.append(scored)
+            used_tokens += cost
+        else:
+            dropped.append(scored)
+
+    return RecallResult(
+        included=tuple(included),
+        dropped=tuple(dropped),
+        used_tokens=used_tokens,
+        budget_tokens=max_tokens,
+        mode=mode,
+    )
 
 
 def recall(

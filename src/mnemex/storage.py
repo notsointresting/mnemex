@@ -3,11 +3,13 @@ from __future__ import annotations
 import os
 import sqlite3
 from collections.abc import Collection
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from types import TracebackType
 
 import sqlite_vec
+
+from mnemex.security import RedactionLog, sanitize
 
 _VALID_SCOPES = frozenset(
     {"agent-private", "project-shared", "user-global"}
@@ -57,6 +59,17 @@ _SCHEMA = (
         last_accessed TEXT,
         last_verified TEXT,
         tags TEXT
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS redaction_audit(
+        id INTEGER PRIMARY KEY,
+        memory_id TEXT NOT NULL,
+        timestamp TEXT NOT NULL,
+        field TEXT NOT NULL,
+        pattern_name TEXT NOT NULL,
+        original_snippet TEXT NOT NULL,
+        replacement TEXT NOT NULL
     )
     """,
     """
@@ -219,8 +232,26 @@ class Storage:
         with self.connection:
             self.connection.execute("DELETE FROM nodes WHERE id = ?", (node_id,))
 
-    def insert_memory(self, memory: Memory) -> None:
+    def insert_memory(
+        self,
+        memory: Memory,
+        *,
+        redactions: RedactionLog | None = None,
+    ) -> None:
         self._validate_scope(memory.scope)
+        audit_log = RedactionLog() if redactions is None else redactions
+        memory = replace(
+            memory,
+            content=sanitize(
+                memory.content, field_name="content", log=audit_log
+            ),
+            rationale=sanitize(
+                memory.rationale, field_name="rationale", log=audit_log
+            ),
+            tags=sanitize(memory.tags, field_name="tags", log=audit_log)
+            if memory.tags
+            else "",
+        )
         with self.connection:
             self.connection.execute(
                 """
@@ -248,6 +279,26 @@ class Storage:
                     memory.tags,
                 ),
             )
+            self.connection.executemany(
+                """
+                INSERT INTO redaction_audit(
+                    memory_id, timestamp, field, pattern_name,
+                    original_snippet, replacement
+                )
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        memory.id,
+                        entry.timestamp,
+                        entry.field,
+                        entry.pattern_name,
+                        entry.original_snippet,
+                        entry.replacement,
+                    )
+                    for entry in audit_log.entries
+                ],
+            )
 
     def get_memory(self, memory_id: str) -> Memory | None:
         row = self.connection.execute(
@@ -256,17 +307,21 @@ class Storage:
         ).fetchone()
         return None if row is None else Memory(*row)
 
+    def list_redactions(self, memory_id: str) -> list[tuple[str, str, str, str]]:
+        """Return masked audit entries for a persisted memory."""
+        rows = self.connection.execute(
+            """
+            SELECT field, pattern_name, original_snippet, replacement
+            FROM redaction_audit
+            WHERE memory_id = ?
+            ORDER BY id
+            """,
+            (memory_id,),
+        ).fetchall()
+        return [tuple(row) for row in rows]
+
     def list_memories(self, scopes: Collection[str]) -> list[Memory]:
-        if isinstance(scopes, (str, bytes)):
-            raise ValueError("scopes must be a non-empty collection")
-
-        values = tuple(scopes)
-        if not values:
-            raise ValueError("scopes must be a non-empty collection")
-        for scope in values:
-            self._validate_scope(scope)
-
-        ordered_scopes = tuple(sorted(set(values)))
+        ordered_scopes = self._normalize_scopes(scopes)
         placeholders = ", ".join("?" for _ in ordered_scopes)
         rows = self.connection.execute(
             f"""
@@ -276,6 +331,28 @@ class Storage:
             ORDER BY created_at, id
             """,
             ordered_scopes,
+        ).fetchall()
+        return [Memory(*row) for row in rows]
+
+    def list_memories_by_anchor_file(
+        self, path: str, scopes: Collection[str]
+    ) -> list[Memory]:
+        """Return in-scope memories anchored to nodes in ``path``."""
+        ordered_scopes = self._normalize_scopes(scopes)
+        normalized_path = path.replace("\\", "/")
+        placeholders = ", ".join("?" for _ in ordered_scopes)
+        memory_columns = ", ".join(
+            f"m.{column.strip()}" for column in _MEMORY_COLUMNS.split(",")
+        )
+        rows = self.connection.execute(
+            f"""
+            SELECT {memory_columns}
+            FROM memories AS m
+            JOIN nodes AS n ON n.id = m.anchor_node_id
+            WHERE n.file = ? AND m.scope IN ({placeholders})
+            ORDER BY m.created_at, m.id
+            """,
+            (normalized_path, *ordered_scopes),
         ).fetchall()
         return [Memory(*row) for row in rows]
 
@@ -338,3 +415,14 @@ class Storage:
     def _validate_scope(scope: str) -> None:
         if scope not in _VALID_SCOPES:
             raise ValueError(f"Invalid memory scope: {scope!r}")
+
+    @classmethod
+    def _normalize_scopes(cls, scopes: Collection[str]) -> tuple[str, ...]:
+        if isinstance(scopes, (str, bytes)):
+            raise ValueError("scopes must be a non-empty collection")
+        values = tuple(scopes)
+        if not values:
+            raise ValueError("scopes must be a non-empty collection")
+        for scope in values:
+            cls._validate_scope(scope)
+        return tuple(sorted(set(values)))

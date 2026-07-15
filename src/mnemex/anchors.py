@@ -7,6 +7,7 @@ from enum import Enum
 from uuid import uuid4
 
 from mnemex.storage import Memory, Node, Storage
+from mnemex.security import RedactionLog, sanitize
 
 
 @dataclass(frozen=True, slots=True)
@@ -114,8 +115,13 @@ def remember(
     confidence: float = 1.0,
     importance: float = 1.0,
     tags: str = "",
+    redaction_log: RedactionLog | None = None,
 ) -> Memory:
     node = None if anchor is None else resolve_anchor(storage, anchor)
+    redactions = RedactionLog() if redaction_log is None else redaction_log
+    content = sanitize(content, field_name="content", log=redactions)
+    rationale = sanitize(rationale, field_name="rationale", log=redactions)
+    tags = sanitize(tags, field_name="tags", log=redactions) if tags else ""
     timestamp = _utc_timestamp()
     memory = Memory(
         id=str(uuid4()) if memory_id is None else memory_id,
@@ -133,7 +139,7 @@ def remember(
         last_verified=timestamp,
         tags=tags,
     )
-    storage.insert_memory(memory)
+    storage.insert_memory(memory, redactions=redactions)
     return memory
 
 

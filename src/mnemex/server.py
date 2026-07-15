@@ -21,7 +21,7 @@ from mnemex.anchors import (
     forget,
     remember,
 )
-from mnemex.retrieval import Embedder, estimate_tokens, recall
+from mnemex.retrieval import Embedder, estimate_tokens, govern_memories, recall
 from mnemex.storage import Storage
 
 __all__ = ["create_server", "MnemexServer"]
@@ -47,6 +47,7 @@ class MnemexServer:
     ) -> None:
         self.storage = Storage(db_path)
         self.embedder = embedder
+        self._agents_md_content: str | None = None
         self.mcp = FastMCP("mnemex")
         self._register_tools()
 
@@ -164,17 +165,29 @@ class MnemexServer:
             Returns anchored memories relevant to the given path.
             """
             scope_list = [s.strip() for s in scopes.split(",")]
-            # Query using the filename as the search term
+            max_tokens = min(max(max_tokens, 0), 400)
             filename = Path(path).stem
             try:
-                result = recall(
-                    storage,
-                    filename,
-                    scopes=scope_list,
-                    embedder=embedder,
-                    limit=10,
-                    max_tokens=max_tokens,
+                anchored_memories = storage.list_memories_by_anchor_file(
+                    path, scope_list
                 )
+                if anchored_memories:
+                    result = govern_memories(
+                        anchored_memories,
+                        max_tokens=max_tokens,
+                        mode="anchor-file",
+                    )
+                else:
+                    result = recall(
+                        storage,
+                        filename,
+                        scopes=scope_list,
+                        # This is deliberately filename BM25, not semantic
+                        # recall: no file anchor exists to take precedence.
+                        embedder=None,
+                        limit=10,
+                        max_tokens=max_tokens,
+                    )
                 return {
                     "path": path,
                     "mode": result.mode,
@@ -202,6 +215,7 @@ class MnemexServer:
             Returns a ranked summary of the project's key decisions and conventions.
             """
             scope_list = [s.strip() for s in scopes.split(",")]
+            max_tokens = min(max(max_tokens, 0), 800)
             try:
                 # Use a broad query to get the most important memories
                 memories = storage.list_memories(scope_list)
@@ -246,38 +260,56 @@ class MnemexServer:
                 return {"error": str(e)}
 
         @self.mcp.tool()
-        def why(symbol_or_file: str) -> dict[str, Any]:
+        def why(
+            symbol_or_file: str,
+            scopes: str = "project-shared",
+        ) -> dict[str, Any]:
             """Explain why a symbol/file is designed this way.
 
-            Returns the anchored decisions plus caller context. Currently uses
-            context_for as the implementation until Phase 5 adds the full
-            fusion engine.
+            Returns anchored decisions plus caller context when the optional
+            Phase 5 fusion module is available.
             """
-            # Phase 5 will add full call-graph fusion; for now delegate to
-            # context_for with the symbol as query.
-            scope_list = ["project-shared"]
+            scope_list = [scope.strip() for scope in scopes.split(",")]
             try:
-                result = recall(
+                from mnemex.agents_md import why as build_why
+
+                result = build_why(
                     storage,
                     symbol_or_file,
                     scopes=scope_list,
                     embedder=embedder,
-                    limit=10,
                     max_tokens=400,
                 )
                 return {
-                    "query": symbol_or_file,
-                    "mode": result.mode,
+                    "query": result.query,
+                    "used_tokens": result.used_tokens,
                     "decisions": [
                         {
-                            "id": sm.memory.id,
-                            "content": sm.memory.content,
-                            "rationale": sm.memory.rationale,
-                            "anchor_node_id": sm.memory.anchor_node_id,
+                            "id": decision.memory_id,
+                            "content": decision.content,
+                            "rationale": decision.rationale,
+                            "anchor_node_id": decision.anchor_node_id,
+                            "freshness": decision.freshness,
                         }
-                        for sm in result.included
+                        for decision in result.decisions
                     ],
-                    "callers": [],  # Phase 5 placeholder
+                    "callers": [
+                        {
+                            "id": caller.node_id,
+                            "name": caller.name,
+                            "file": caller.file,
+                            "line_start": caller.line_start,
+                            "edge_type": caller.edge_type,
+                        }
+                        for caller in result.callers
+                    ],
+                }
+            except ImportError:
+                return {
+                    "error": "agents_md fusion not available",
+                    "query": symbol_or_file,
+                    "decisions": [],
+                    "callers": [],
                 }
             except ValueError as e:
                 return {"error": str(e)}
@@ -336,25 +368,24 @@ class MnemexServer:
         def generate_agents_md() -> dict[str, Any]:
             """Generate AGENTS.md content from the current memory state.
 
-            Full implementation in Phase 5; returns a basic structure for now.
+            Uses the optional Phase 5 generator when available and retains the
+            prior content to report whether regeneration changed it.
             """
             try:
-                memories = storage.list_memories(["project-shared"])
-                sections = []
-                for mem in memories:
-                    if mem.anchor_node_id:
-                        sections.append(
-                            f"- {mem.content} (anchor: {mem.anchor_node_id})"
-                        )
-                    else:
-                        sections.append(f"- {mem.content}")
-                content = (
-                    "# Project Memory (auto-generated)\n\n"
-                    + "\n".join(sections)
-                    if sections
-                    else "# Project Memory (auto-generated)\n\nNo memories stored yet."
+                from mnemex.agents_md import generate_agents_md as build_agents_md
+
+                result = build_agents_md(
+                    storage,
+                    previous_content=self._agents_md_content,
                 )
-                return {"content": content, "memory_count": len(memories)}
+                self._agents_md_content = result.content
+                return {
+                    "content": result.content,
+                    "memory_count": result.memory_count,
+                    "changed": result.changed,
+                }
+            except ImportError:
+                return {"error": "agents_md generator not available"}
             except ValueError as e:
                 return {"error": str(e)}
 
