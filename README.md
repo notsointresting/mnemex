@@ -124,8 +124,9 @@ command = "python"
 args = ["-m", "mnemex", "serve", "--db", ".mnemex/mnemex.sqlite3"]
 ```
 
-Codex is the first verified live-client integration. The repository also has a
-subprocess test for MCP initialize, tool listing, and tool invocation.
+Mnemex speaks MCP over stdio, verified by an automated subprocess test that
+performs the JSON-RPC initialize handshake, lists tools, and invokes them
+(`tests/test_mcp_stdio_integration.py`). Codex is the intended primary client.
 
 ## Core Workflows
 
@@ -200,19 +201,15 @@ and optional AGENTS.md text. It does not copy a raw SQLite database.
 
 ## Agent Skill
 
-After the npm package is explicitly published, install the project skill with
-Node 18 or later:
-
-```bash
-npx @mnemex/skills .agents/skills/mnemex
-```
-
-The npm package remains private in this checkout. Run the installer directly
-instead:
+Install the project skill from this checkout with Node 18 or later:
 
 ```bash
 node npm/mnemex-skills/bin/mnemex-skills.cjs .agents/skills/mnemex
 ```
+
+After the npm package is published, the same installer will be available as
+`npx @mnemex/skills .agents/skills/mnemex`; the package remains private in
+this checkout.
 
 ## Evidence And Benchmarks
 
