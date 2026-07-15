@@ -1,7 +1,7 @@
 """Phase 4 — MCP server exposing mnemex tools.
 
 Uses ``mcp.server.fastmcp.FastMCP`` (shipped with the ``mcp`` package, which is
-a dependency of ``fastmcp==3.4.4``) to expose the 10 tools over stdio transport.
+a dependency of ``fastmcp==3.4.4``) to expose tools over stdio transport.
 The server is stateful: it opens a single Storage connection at startup and
 reuses it for all tool calls.
 """
@@ -21,6 +21,12 @@ from mnemex.anchors import (
     forget,
     remember,
 )
+from mnemex.decision_guard import (
+    check_proposed_change as evaluate_proposed_change,
+    override_decision_guard as persist_guard_override,
+)
+from mnemex.evidence import DEFAULT_EVIDENCE_TOKEN_CAP
+from mnemex.judge import SemanticJudge
 from mnemex.retrieval import Embedder, estimate_tokens, govern_memories, recall
 from mnemex.storage import Storage
 
@@ -37,6 +43,9 @@ class MnemexServer:
     embedder
         Optional embedding function for hybrid retrieval.  When ``None``,
         the server operates in BM25-only mode.
+    semantic_judge
+        Optional, explicitly enabled remote semantic judge. ``None`` keeps the
+        server entirely local and returns an advisory unavailable verdict.
     """
 
     def __init__(
@@ -44,9 +53,15 @@ class MnemexServer:
         db_path: str | Path = ":memory:",
         *,
         embedder: Embedder | None = None,
+        semantic_judge: SemanticJudge | None = None,
+        max_evidence_tokens: int = DEFAULT_EVIDENCE_TOKEN_CAP,
     ) -> None:
+        if max_evidence_tokens <= 0:
+            raise ValueError("max_evidence_tokens must be positive")
         self.storage = Storage(db_path)
         self.embedder = embedder
+        self.semantic_judge = semantic_judge
+        self.max_evidence_tokens = max_evidence_tokens
         self._agents_md_content: str | None = None
         self.mcp = FastMCP("mnemex")
         self._register_tools()
@@ -54,6 +69,7 @@ class MnemexServer:
     def _register_tools(self) -> None:
         storage = self.storage
         embedder = self.embedder
+        semantic_judge = self.semantic_judge
 
         @self.mcp.tool()
         def remember_decision(
@@ -81,6 +97,10 @@ class MnemexServer:
                     rationale=rationale,
                     tags=tags,
                 )
+                if embedder is not None and storage.vec_available:
+                    from mnemex.retrieval import ensure_embeddings
+
+                    ensure_embeddings(storage, embedder, scopes=(memory.scope,))
                 return {"memory_id": memory.id, "status": "stored"}
             except (AnchorNotFoundError, AmbiguousAnchorError, ValueError) as e:
                 return {"error": str(e)}
@@ -153,6 +173,155 @@ class MnemexServer:
                 }
             except ValueError as e:
                 return {"error": str(e)}
+
+        @self.mcp.tool()
+        def check_proposed_change(
+            path: str,
+            patch_summary: str,
+            scopes: str = "project-shared",
+            max_evidence_tokens: int = 800,
+            enforce_constraints: bool = False,
+        ) -> dict[str, Any]:
+            """Check a proposed edit against fresh anchored decisions.
+
+            A change blocks only on a fresh, confidence-qualified semantic
+            contradiction. Local mode and every other result are advisory.
+            """
+            try:
+                result = evaluate_proposed_change(
+                    storage,
+                    path,
+                    patch_summary,
+                    judge=semantic_judge,
+                    scopes=tuple(scope.strip() for scope in scopes.split(",")),
+                    max_evidence_tokens=max(
+                        0, min(max_evidence_tokens, self.max_evidence_tokens)
+                    ),
+                    enforce_constraints=enforce_constraints,
+                )
+                from mnemex.constraints import enforce_constraints
+
+                response = result.as_dict()
+                response["constraint_violations"] = [
+                    {
+                        "memory_id": violation.memory_id,
+                        "kind": violation.kind,
+                        "phrase": violation.phrase,
+                        "message": violation.message,
+                    }
+                    for violation in enforce_constraints(
+                        storage, patch_summary, scopes=tuple(scope.strip() for scope in scopes.split(","))
+                    )
+                ]
+                return response
+            except ValueError as e:
+                return {"error": str(e)}
+
+        @self.mcp.tool()
+        def override_decision_guard(
+            run_id: str,
+            actor: str,
+            reason: str,
+        ) -> dict[str, Any]:
+            """Record an explicit override for a prior guard result."""
+            try:
+                override = persist_guard_override(
+                    storage, run_id, actor=actor, reason=reason
+                )
+                return {
+                    "run_id": override.guard_run_id,
+                    "override_id": override.id,
+                    "actor": override.actor,
+                    "reason": override.reason,
+                    "timestamp": override.timestamp,
+                }
+            except ValueError as e:
+                return {"error": str(e)}
+
+        @self.mcp.tool()
+        def reconcile_stale_decision(
+            memory_id: str,
+            changed_symbol: str,
+            diff: str,
+        ) -> dict[str, Any]:
+            """Classify a stale decision for auditable follow-up."""
+            from mnemex.lifecycle import reconcile_stale_decision as reconcile
+
+            status = reconcile(storage, memory_id, changed_symbol, diff)
+            return {"memory_id": memory_id, "status": status}
+
+        @self.mcp.tool()
+        def export_brain(
+            destination: str,
+            memory_ids: list[str],
+            agents_md: str = "",
+            source_commit: str | None = None,
+        ) -> dict[str, Any]:
+            """Export selected local decision records as a portable bundle."""
+            try:
+                from mnemex.bundles import export_bundle
+
+                result = export_bundle(
+                    storage,
+                    destination,
+                    memory_ids,
+                    agents_md=agents_md,
+                    source_commit=source_commit,
+                )
+                return {"path": str(result.path), "manifest": result.manifest}
+            except (OSError, ValueError) as error:
+                return {"error": str(error)}
+
+        @self.mcp.tool()
+        def import_brain(source: str) -> dict[str, Any]:
+            """Import a portable bundle and report immediate anchor freshness."""
+            try:
+                from mnemex.bundles import import_bundle
+
+                result = import_bundle(storage, source)
+                return {
+                    "memory_ids": list(result.memory_ids),
+                    "id_map": result.id_map,
+                    "source_commit": result.source_commit,
+                    "agents_md": result.agents_md,
+                    "skipped_node_ids": list(result.skipped_node_ids),
+                    "freshness": [
+                        {
+                            "memory_id": report.memory_id,
+                            "status": report.status.value,
+                            "anchor_node_id": report.anchor_node_id,
+                        }
+                        for report in result.freshness
+                    ],
+                }
+            except ValueError as error:
+                return {"error": str(error)}
+
+        @self.mcp.tool()
+        def review_conflicts(
+            scopes: str = "project-shared",
+        ) -> dict[str, Any]:
+            """List derived conflicts among active, in-scope decisions."""
+            from mnemex.conflicts import list_conflicts
+
+            result = list_conflicts(
+                storage, scopes=tuple(scope.strip() for scope in scopes.split(","))
+            )
+            return {
+                "scopes": list(result.scopes),
+                "scanned_decision_ids": list(result.scanned_decision_ids),
+                "conflicts": [
+                    {
+                        "memory_ids": list(conflict.memory_ids),
+                        "shared_terms": list(conflict.shared_terms),
+                        "shared_tags": list(conflict.shared_tags),
+                        "anchor_file": conflict.anchor_file,
+                        "anchor_node_id": conflict.anchor_node_id,
+                        "context": list(conflict.context),
+                    }
+                    for conflict in result.conflicts
+                ],
+            }
 
         @self.mcp.tool()
         def context_for(
@@ -398,6 +567,13 @@ def create_server(
     db_path: str | Path = ":memory:",
     *,
     embedder: Embedder | None = None,
+    semantic_judge: SemanticJudge | None = None,
+    max_evidence_tokens: int = DEFAULT_EVIDENCE_TOKEN_CAP,
 ) -> MnemexServer:
     """Factory for creating a configured MnemexServer instance."""
-    return MnemexServer(db_path, embedder=embedder)
+    return MnemexServer(
+        db_path,
+        embedder=embedder,
+        semantic_judge=semantic_judge,
+        max_evidence_tokens=max_evidence_tokens,
+    )

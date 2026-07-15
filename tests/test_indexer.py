@@ -13,6 +13,7 @@ import pytest
 from mnemex.anchors import Anchor, resolve_anchor
 from mnemex.indexer import (
     PythonASTAdapter,
+    TypeScriptAdapter,
     index_directory,
     index_file,
     reindex_file,
@@ -67,6 +68,50 @@ def helper():
 def format_name(name):
     """Format a name."""
     return helper()
+''',
+        encoding="utf-8",
+    )
+    return tmp_path
+
+
+@pytest.fixture
+def typescript_repo(tmp_path: Path) -> Path:
+    """A small TypeScript project with cross-file structural links."""
+    (tmp_path / "base.ts").write_text(
+        '''\
+export class Base {
+    protected label(): string {
+        return "base";
+    }
+}
+
+export function render(value: string): string {
+    return value.toUpperCase();
+}
+''',
+        encoding="utf-8",
+    )
+    (tmp_path / "service.ts").write_text(
+        '''\
+import { Base, render } from "./base";
+
+export class Widget extends Base {
+    public run(): string {
+        return render(this.label());
+    }
+}
+
+export function boot(): string {
+    return render("ready");
+}
+''',
+        encoding="utf-8",
+    )
+    (tmp_path / "panel.tsx").write_text(
+        '''\
+export function Panel() {
+    return <section>Panel</section>;
+}
 ''',
         encoding="utf-8",
     )
@@ -141,6 +186,24 @@ def test_index_directory_indexes_all_files(golden_repo: Path) -> None:
             "SELECT count(*) FROM nodes"
         ).fetchone()[0]
         assert total >= 9  # at minimum module + top-level defs per file
+
+
+def test_index_directory_skips_generated_dependency_directories(tmp_path: Path) -> None:
+    (tmp_path / "application.py").write_text("def app():\n    return True\n")
+    ignored = tmp_path / ".venv"
+    ignored.mkdir()
+    (ignored / "dependency.py").write_text("def dependency():\n    return True\n")
+
+    with Storage() as storage:
+        index_directory(storage, tmp_path)
+        files = {
+            row[0] for row in storage.connection.execute(
+                "SELECT DISTINCT file FROM nodes"
+            ).fetchall()
+        }
+
+    assert any(file.endswith("application.py") for file in files)
+    assert not any(".venv" in file for file in files)
 
 
 def test_trace_callers_returns_reverse_edges(golden_repo: Path) -> None:
@@ -269,3 +332,124 @@ def test_content_hash_is_deterministic(golden_repo: Path) -> None:
 
     assert first == second
     assert len(first) == 64  # SHA-256 hex
+
+
+def test_typescript_adapter_extracts_cross_file_structure(
+    typescript_repo: Path,
+) -> None:
+    with Storage() as storage:
+        # Index the imported module first so cross-file targets exist in storage.
+        index_file(storage, typescript_repo / "base.ts")
+        result = index_file(storage, typescript_repo / "service.ts")
+
+        service_file = str(typescript_repo / "service.ts").replace("\\", "/")
+        rows = storage.connection.execute(
+            "SELECT name, type, language FROM nodes WHERE file = ? ORDER BY line_start",
+            (service_file,),
+        ).fetchall()
+        assert ("service", "module", "typescript") in rows
+        assert ("Widget", "class", "typescript") in rows
+        assert ("run", "function", "typescript") in rows
+        assert ("boot", "function", "typescript") in rows
+        assert result.edges_upserted >= 4
+
+        links = storage.connection.execute(
+            """
+            SELECT caller.name, callee.name, edge.type
+            FROM edges edge
+            JOIN nodes caller ON caller.id = edge.from_id
+            JOIN nodes callee ON callee.id = edge.to_id
+            WHERE caller.file = ?
+            """,
+            (service_file,),
+        ).fetchall()
+        assert ("service", "base", "imports") in links
+        assert ("Widget", "Base", "inherits") in links
+        assert ("run", "render", "calls") in links
+        assert ("boot", "render", "calls") in links
+
+
+def test_tsx_paths_select_typescript_adapter(typescript_repo: Path) -> None:
+    with Storage() as storage:
+        index_file(storage, typescript_repo / "panel.tsx")
+        panel_file = str(typescript_repo / "panel.tsx").replace("\\", "/")
+        languages = storage.connection.execute(
+            "SELECT DISTINCT language FROM nodes WHERE file = ?", (panel_file,)
+        ).fetchall()
+        assert languages == [("typescript",)]
+
+    adapter = TypeScriptAdapter()
+    assert [
+        node.name
+        for node in adapter.extract_nodes(
+            typescript_repo / "panel.tsx",
+            (typescript_repo / "panel.tsx").read_text(encoding="utf-8"),
+        )
+    ] == ["panel", "Panel"]
+
+
+def test_reindex_replaces_edges_and_cleans_cross_file_deletions(
+    typescript_repo: Path,
+) -> None:
+    with Storage() as storage:
+        base_path = typescript_repo / "base.ts"
+        service_path = typescript_repo / "service.ts"
+        index_file(storage, base_path)
+        index_file(storage, service_path)
+
+        original_count = storage.connection.execute(
+            "SELECT count(*) FROM edges"
+        ).fetchone()[0]
+        reindex_file(storage, service_path)
+        replacement_count = storage.connection.execute(
+            "SELECT count(*) FROM edges"
+        ).fetchone()[0]
+        duplicate_count = storage.connection.execute(
+            """
+            SELECT count(*) FROM (
+                SELECT from_id, to_id, type, COUNT(*) AS occurrences
+                FROM edges
+                GROUP BY from_id, to_id, type
+                HAVING occurrences > 1
+            )
+            """
+        ).fetchone()[0]
+        assert replacement_count == original_count
+        assert duplicate_count == 0
+
+        base_path.write_text(
+            '''\
+export class Base {
+    protected label(): string {
+        return "base";
+    }
+}
+''',
+            encoding="utf-8",
+        )
+        result = reindex_file(storage, base_path)
+        dangling_count = storage.connection.execute(
+            """
+            SELECT count(*)
+            FROM edges edge
+            LEFT JOIN nodes source ON source.id = edge.from_id
+            LEFT JOIN nodes target ON target.id = edge.to_id
+            WHERE source.id IS NULL OR target.id IS NULL
+            """
+        ).fetchone()[0]
+        assert result.nodes_deleted == 1
+        assert dangling_count == 0
+
+        base_path.unlink()
+        result = reindex_file(storage, base_path)
+        dangling_count = storage.connection.execute(
+            """
+            SELECT count(*)
+            FROM edges edge
+            LEFT JOIN nodes source ON source.id = edge.from_id
+            LEFT JOIN nodes target ON target.id = edge.to_id
+            WHERE source.id IS NULL OR target.id IS NULL
+            """
+        ).fetchone()[0]
+        assert result.nodes_deleted >= 3
+        assert dangling_count == 0

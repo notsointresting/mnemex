@@ -29,3 +29,18 @@ jobs:
         run: python -m ruff check .
       - name: Test
         run: python -m pytest
+      - name: Build wheel
+        run: |
+          python -m pip install build
+          python -m build --wheel
+          python tools/build_release_bundle.py
+      - name: Upload distributable artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: mnemex-${{ matrix.os }}-py${{ matrix.python-version }}
+          path: dist/*
+      - name: Clean-install wheel smoke test
+        run: |
+          python -c "import shutil; shutil.rmtree('.wheel-smoke', ignore_errors=True)"
+          python -c "import glob, subprocess, sys; subprocess.check_call([sys.executable, '-m', 'pip', 'install', '--no-deps', '--target', '.wheel-smoke', *glob.glob('dist/*.whl')])"
+          python -c "import sys; sys.path.insert(0, '.wheel-smoke'); import mnemex; from mnemex.__main__ import main; assert mnemex.__version__ == '0.1.0'; assert main(['--version']) == 0"

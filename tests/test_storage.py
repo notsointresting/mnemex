@@ -111,7 +111,7 @@ def test_schema_is_complete_and_reopen_is_idempotent(tmp_path: Path) -> None:
     with Storage(database) as storage:
         assert storage.connection.execute(
             "PRAGMA user_version"
-        ).fetchone() == (1,)
+        ).fetchone() == (3,)
         for table, columns in expected_columns.items():
             actual = storage.connection.execute(
                 f"PRAGMA table_info({table})"
@@ -125,7 +125,7 @@ def test_schema_is_complete_and_reopen_is_idempotent(tmp_path: Path) -> None:
     with Storage(database) as reopened:
         assert reopened.connection.execute(
             "PRAGMA user_version"
-        ).fetchone() == (1,)
+        ).fetchone() == (3,)
         assert reopened.get_memory("memory-1") == make_memory(
             anchor_node_id=None, anchor_hash=None
         )

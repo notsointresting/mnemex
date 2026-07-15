@@ -21,7 +21,14 @@ _MEMORY_COLUMNS = (
     "confidence, importance, created_at, last_accessed, last_verified, tags"
 )
 
-_SCHEMA = (
+_SCHEMA_VERSION = 3
+_DECISION_STATUSES = frozenset({"active", "superseded", "retired"})
+_GUARD_VERDICTS = frozenset(
+    {"compatible", "contradiction", "supersedes", "uncertain", "unavailable"}
+)
+_FRESHNESS_STATES = frozenset({"fresh", "stale", "orphaned", "unanchored"})
+
+_V1_SCHEMA = (
     """
     CREATE TABLE IF NOT EXISTS nodes(
         id TEXT PRIMARY KEY,
@@ -104,6 +111,114 @@ _SCHEMA = (
     """,
 )
 
+# Version 2 is deliberately additive. Existing v1 memories remain the source
+# of truth, while the new tables hold optional decision-guard and lifecycle
+# state keyed by the pre-existing memory identifiers.
+_V2_SCHEMA = (
+    """
+    CREATE TABLE IF NOT EXISTS decision_metadata(
+        memory_id TEXT PRIMARY KEY,
+        status TEXT NOT NULL DEFAULT 'active' CHECK (
+            status IN ('active', 'superseded', 'retired')
+        ),
+        supersedes_memory_id TEXT,
+        agent TEXT,
+        client TEXT,
+        session TEXT,
+        branch TEXT,
+        commit_hash TEXT,
+        source_request TEXT,
+        review_after TEXT,
+        access_count INTEGER NOT NULL DEFAULT 0 CHECK (access_count >= 0),
+        last_recalled_at TEXT,
+        last_confirmed_at TEXT,
+        FOREIGN KEY(memory_id) REFERENCES memories(id),
+        FOREIGN KEY(supersedes_memory_id) REFERENCES memories(id)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS guard_runs(
+        id TEXT PRIMARY KEY,
+        path TEXT NOT NULL,
+        patch_summary TEXT NOT NULL,
+        provider TEXT NOT NULL,
+        model TEXT NOT NULL,
+        payload_hash TEXT NOT NULL,
+        payload_tokens INTEGER NOT NULL CHECK (payload_tokens >= 0),
+        verdict TEXT NOT NULL CHECK (
+            verdict IN ('compatible', 'contradiction', 'supersedes',
+                        'uncertain', 'unavailable')
+        ),
+        confidence REAL NOT NULL CHECK (confidence >= 0 AND confidence <= 1),
+        explanation TEXT NOT NULL,
+        recommended_action TEXT NOT NULL,
+        blocked INTEGER NOT NULL CHECK (blocked IN (0, 1)),
+        created_at TEXT NOT NULL
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS guard_evidence(
+        guard_run_id TEXT NOT NULL,
+        memory_id TEXT NOT NULL,
+        rank INTEGER NOT NULL CHECK (rank >= 0),
+        freshness TEXT NOT NULL CHECK (
+            freshness IN ('fresh', 'stale', 'orphaned', 'unanchored')
+        ),
+        PRIMARY KEY(guard_run_id, memory_id),
+        UNIQUE(guard_run_id, rank),
+        FOREIGN KEY(guard_run_id) REFERENCES guard_runs(id),
+        FOREIGN KEY(memory_id) REFERENCES memories(id)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS guard_overrides(
+        id INTEGER PRIMARY KEY,
+        guard_run_id TEXT NOT NULL,
+        actor TEXT NOT NULL,
+        reason TEXT NOT NULL,
+        timestamp TEXT NOT NULL,
+        FOREIGN KEY(guard_run_id) REFERENCES guard_runs(id)
+    )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS decision_metadata_status_review_idx
+    ON decision_metadata(status, review_after)
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS guard_evidence_memory_idx
+    ON guard_evidence(memory_id)
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS guard_overrides_run_idx
+    ON guard_overrides(guard_run_id, id)
+    """,
+)
+
+# Version 3 records the masked redaction audit for every non-memory write.
+# Memory audits stay in their established table for backward compatibility.
+_V3_SCHEMA = (
+    """
+    CREATE TABLE IF NOT EXISTS persistence_redaction_audit(
+        id INTEGER PRIMARY KEY,
+        entity_type TEXT NOT NULL,
+        entity_id TEXT NOT NULL,
+        timestamp TEXT NOT NULL,
+        field TEXT NOT NULL,
+        pattern_name TEXT NOT NULL,
+        original_snippet TEXT NOT NULL,
+        replacement TEXT NOT NULL
+    )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS persistence_redaction_audit_entity_idx
+    ON persistence_redaction_audit(entity_type, entity_id, id)
+    """,
+)
+
+# Kept as a compatibility alias for code and tests that inspect the original
+# bootstrap schema. New databases receive v1 followed by the v1-to-v2 upgrade.
+_SCHEMA = _V1_SCHEMA
+
 # Created only when the sqlite-vec extension is available. It is an optional
 # semantic upgrade: without it, mnemex runs in BM25/FTS5-only ("no-ML") mode.
 _VEC_SCHEMA = """
@@ -139,6 +254,57 @@ class Memory:
     last_accessed: str
     last_verified: str
     tags: str
+
+
+@dataclass(frozen=True, slots=True)
+class DecisionMetadata:
+    memory_id: str
+    status: str
+    supersedes_memory_id: str | None
+    agent: str | None
+    client: str | None
+    session: str | None
+    branch: str | None
+    commit_hash: str | None
+    source_request: str | None
+    review_after: str | None
+    access_count: int
+    last_recalled_at: str | None
+    last_confirmed_at: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class GuardRun:
+    id: str
+    path: str
+    patch_summary: str
+    provider: str
+    model: str
+    payload_hash: str
+    payload_tokens: int
+    verdict: str
+    confidence: float
+    explanation: str
+    recommended_action: str
+    blocked: bool
+    created_at: str
+
+
+@dataclass(frozen=True, slots=True)
+class GuardEvidence:
+    guard_run_id: str
+    memory_id: str
+    rank: int
+    freshness: str
+
+
+@dataclass(frozen=True, slots=True)
+class GuardOverride:
+    id: int
+    guard_run_id: str
+    actor: str
+    reason: str
+    timestamp: str
 
 
 class Storage:
@@ -299,6 +465,12 @@ class Storage:
                     for entry in audit_log.entries
                 ],
             )
+            # All decisions, including legacy Memory callers, receive the
+            # durable lifecycle row required by schema v2.
+            self.connection.execute(
+                "INSERT INTO decision_metadata(memory_id) VALUES (?)",
+                (memory.id,),
+            )
 
     def get_memory(self, memory_id: str) -> Memory | None:
         row = self.connection.execute(
@@ -319,6 +491,338 @@ class Storage:
             (memory_id,),
         ).fetchall()
         return [tuple(row) for row in rows]
+
+    def list_persistence_redactions(
+        self, entity_type: str, entity_id: str
+    ) -> list[tuple[str, str, str, str]]:
+        """Return masked audits for guard and provenance persistence paths."""
+        rows = self.connection.execute(
+            """
+            SELECT field, pattern_name, original_snippet, replacement
+            FROM persistence_redaction_audit
+            WHERE entity_type = ? AND entity_id = ?
+            ORDER BY id
+            """,
+            (entity_type, entity_id),
+        ).fetchall()
+        return [tuple(row) for row in rows]
+
+    def ensure_decision_metadata(
+        self,
+        memory_id: str,
+        *,
+        status: str = "active",
+        supersedes_memory_id: str | None = None,
+        agent: str | None = None,
+        client: str | None = None,
+        session: str | None = None,
+        branch: str | None = None,
+        commit_hash: str | None = None,
+        source_request: str | None = None,
+        review_after: str | None = None,
+    ) -> DecisionMetadata:
+        """Create immutable-by-default lifecycle metadata for a memory.
+
+        Repeated calls are idempotent and return the originally recorded row;
+        lifecycle code must use :meth:`set_decision_status` for a deliberate
+        status transition.
+        """
+        self._require_memory(memory_id)
+        self._validate_status(status)
+        if supersedes_memory_id is not None:
+            self._require_memory(supersedes_memory_id)
+        redactions = RedactionLog()
+        values = (
+            memory_id,
+            status,
+            supersedes_memory_id,
+            self._sanitize_optional(agent, "agent", redactions),
+            self._sanitize_optional(client, "client", redactions),
+            self._sanitize_optional(session, "session", redactions),
+            self._sanitize_optional(branch, "branch", redactions),
+            self._sanitize_optional(commit_hash, "commit_hash", redactions),
+            self._sanitize_optional(source_request, "source_request", redactions),
+            self._sanitize_optional(review_after, "review_after", redactions),
+        )
+        with self.connection:
+            self.connection.execute(
+                """
+                INSERT INTO decision_metadata(
+                    memory_id, status, supersedes_memory_id, agent, client,
+                    session, branch, commit_hash, source_request, review_after
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(memory_id) DO UPDATE SET
+                    supersedes_memory_id = COALESCE(
+                        decision_metadata.supersedes_memory_id,
+                        excluded.supersedes_memory_id
+                    ),
+                    agent = COALESCE(decision_metadata.agent, excluded.agent),
+                    client = COALESCE(decision_metadata.client, excluded.client),
+                    session = COALESCE(decision_metadata.session, excluded.session),
+                    branch = COALESCE(decision_metadata.branch, excluded.branch),
+                    commit_hash = COALESCE(
+                        decision_metadata.commit_hash, excluded.commit_hash
+                    ),
+                    source_request = COALESCE(
+                        decision_metadata.source_request, excluded.source_request
+                    ),
+                    review_after = COALESCE(
+                        decision_metadata.review_after, excluded.review_after
+                    )
+                """,
+                values,
+            )
+            self._record_persistence_redactions(
+                "decision_metadata", memory_id, redactions
+            )
+        metadata = self.get_decision_metadata(memory_id)
+        assert metadata is not None
+        return metadata
+
+    def get_decision_metadata(self, memory_id: str) -> DecisionMetadata | None:
+        row = self.connection.execute(
+            """
+            SELECT memory_id, status, supersedes_memory_id, agent, client,
+                   session, branch, commit_hash, source_request, review_after,
+                   access_count, last_recalled_at, last_confirmed_at
+            FROM decision_metadata
+            WHERE memory_id = ?
+            """,
+            (memory_id,),
+        ).fetchone()
+        return None if row is None else DecisionMetadata(*row)
+
+    def set_decision_status(
+        self,
+        memory_id: str,
+        status: str,
+        *,
+        supersedes_memory_id: str | None = None,
+        review_after: str | None = None,
+    ) -> DecisionMetadata:
+        """Persist an explicit lifecycle transition for an existing decision."""
+        self._validate_status(status)
+        current = self.ensure_decision_metadata(memory_id)
+        if supersedes_memory_id is not None:
+            self._require_memory(supersedes_memory_id)
+        redactions = RedactionLog()
+        with self.connection:
+            self.connection.execute(
+                """
+                UPDATE decision_metadata
+                SET status = ?, supersedes_memory_id = ?, review_after = ?
+                WHERE memory_id = ?
+                """,
+                (
+                    status,
+                    supersedes_memory_id
+                    if supersedes_memory_id is not None
+                    else current.supersedes_memory_id,
+                    self._sanitize_optional(
+                        review_after, "review_after", redactions
+                    ),
+                    memory_id,
+                ),
+            )
+            self._record_persistence_redactions(
+                "decision_metadata", memory_id, redactions
+            )
+        metadata = self.get_decision_metadata(memory_id)
+        assert metadata is not None
+        return metadata
+
+    def record_recall(
+        self, memory_id: str, timestamp: str
+    ) -> DecisionMetadata:
+        """Increment recall statistics without changing the memory itself."""
+        self.ensure_decision_metadata(memory_id)
+        with self.connection:
+            self.connection.execute(
+                """
+                UPDATE decision_metadata
+                SET access_count = access_count + 1, last_recalled_at = ?
+                WHERE memory_id = ?
+                """,
+                (self._sanitize_optional(timestamp, "last_recalled_at"), memory_id),
+            )
+        metadata = self.get_decision_metadata(memory_id)
+        assert metadata is not None
+        return metadata
+
+    def record_confirmation(
+        self, memory_id: str, timestamp: str
+    ) -> DecisionMetadata:
+        """Record a human or agent confirmation without rewriting the decision."""
+        self.ensure_decision_metadata(memory_id)
+        with self.connection:
+            self.connection.execute(
+                """
+                UPDATE decision_metadata
+                SET last_confirmed_at = ?
+                WHERE memory_id = ?
+                """,
+                (self._sanitize_optional(timestamp, "last_confirmed_at"), memory_id),
+            )
+        metadata = self.get_decision_metadata(memory_id)
+        assert metadata is not None
+        return metadata
+
+    def record_guard_run(self, run: GuardRun) -> GuardRun:
+        """Persist a sanitized, bounded guard result and return its stored form."""
+        self._validate_guard_run(run)
+        redactions = RedactionLog()
+        stored = GuardRun(
+            id=self._sanitize(run.id, "guard_run_id", redactions),
+            path=self._sanitize(run.path, "path", redactions),
+            patch_summary=self._sanitize(
+                run.patch_summary, "patch_summary", redactions
+            ),
+            provider=self._sanitize(run.provider, "provider", redactions),
+            model=self._sanitize(run.model, "model", redactions),
+            payload_hash=self._sanitize(
+                run.payload_hash, "payload_hash", redactions
+            ),
+            payload_tokens=run.payload_tokens,
+            verdict=run.verdict,
+            confidence=run.confidence,
+            explanation=self._sanitize(run.explanation, "explanation", redactions),
+            recommended_action=self._sanitize(
+                run.recommended_action, "recommended_action", redactions
+            ),
+            blocked=run.blocked,
+            created_at=self._sanitize(run.created_at, "created_at", redactions),
+        )
+        with self.connection:
+            self.connection.execute(
+                """
+                INSERT INTO guard_runs(
+                    id, path, patch_summary, provider, model, payload_hash,
+                    payload_tokens, verdict, confidence, explanation,
+                    recommended_action, blocked, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    stored.id,
+                    stored.path,
+                    stored.patch_summary,
+                    stored.provider,
+                    stored.model,
+                    stored.payload_hash,
+                    stored.payload_tokens,
+                    stored.verdict,
+                    stored.confidence,
+                    stored.explanation,
+                    stored.recommended_action,
+                    int(stored.blocked),
+                    stored.created_at,
+                ),
+            )
+            self._record_persistence_redactions(
+                "guard_run", stored.id, redactions
+            )
+        return stored
+
+    def get_guard_run(self, run_id: str) -> GuardRun | None:
+        row = self.connection.execute(
+            """
+            SELECT id, path, patch_summary, provider, model, payload_hash,
+                   payload_tokens, verdict, confidence, explanation,
+                   recommended_action, blocked, created_at
+            FROM guard_runs
+            WHERE id = ?
+            """,
+            (run_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        values = list(row)
+        values[11] = bool(values[11])
+        return GuardRun(*values)
+
+    def record_guard_evidence(self, evidence: GuardEvidence) -> GuardEvidence:
+        self._require_guard_run(evidence.guard_run_id)
+        self._require_memory(evidence.memory_id)
+        if evidence.rank < 0:
+            raise ValueError("guard evidence rank must be non-negative")
+        if evidence.freshness not in _FRESHNESS_STATES:
+            raise ValueError(f"Invalid freshness state: {evidence.freshness!r}")
+        with self.connection:
+            self.connection.execute(
+                """
+                INSERT INTO guard_evidence(guard_run_id, memory_id, rank, freshness)
+                VALUES (?, ?, ?, ?)
+                """,
+                (
+                    evidence.guard_run_id,
+                    evidence.memory_id,
+                    evidence.rank,
+                    evidence.freshness,
+                ),
+            )
+        return evidence
+
+    def list_guard_evidence(self, run_id: str) -> list[GuardEvidence]:
+        rows = self.connection.execute(
+            """
+            SELECT guard_run_id, memory_id, rank, freshness
+            FROM guard_evidence
+            WHERE guard_run_id = ?
+            ORDER BY rank, memory_id
+            """,
+            (run_id,),
+        ).fetchall()
+        return [GuardEvidence(*row) for row in rows]
+
+    def record_guard_override(
+        self,
+        run_id: str,
+        *,
+        actor: str,
+        reason: str,
+        timestamp: str,
+    ) -> GuardOverride:
+        self._require_guard_run(run_id)
+        redactions = RedactionLog()
+        with self.connection:
+            cursor = self.connection.execute(
+                """
+                INSERT INTO guard_overrides(guard_run_id, actor, reason, timestamp)
+                VALUES (?, ?, ?, ?)
+                """,
+                (
+                    run_id,
+                    self._sanitize(actor, "override_actor", redactions),
+                    self._sanitize(reason, "override_reason", redactions),
+                    self._sanitize(timestamp, "override_timestamp", redactions),
+                ),
+            )
+            self._record_persistence_redactions(
+                "guard_override", run_id, redactions
+            )
+        override = self.connection.execute(
+            """
+            SELECT id, guard_run_id, actor, reason, timestamp
+            FROM guard_overrides
+            WHERE id = ?
+            """,
+            (cursor.lastrowid,),
+        ).fetchone()
+        assert override is not None
+        return GuardOverride(*override)
+
+    def list_guard_overrides(self, run_id: str) -> list[GuardOverride]:
+        rows = self.connection.execute(
+            """
+            SELECT id, guard_run_id, actor, reason, timestamp
+            FROM guard_overrides
+            WHERE guard_run_id = ?
+            ORDER BY id
+            """,
+            (run_id,),
+        ).fetchall()
+        return [GuardOverride(*row) for row in rows]
 
     def list_memories(self, scopes: Collection[str]) -> list[Memory]:
         ordered_scopes = self._normalize_scopes(scopes)
@@ -401,15 +905,123 @@ class Storage:
     def _initialize(self) -> None:
         row = self.connection.execute("PRAGMA user_version").fetchone()
         version = 0 if row is None else row[0]
-        if version not in (0, 1):
+        if version < 0 or version > _SCHEMA_VERSION:
             raise RuntimeError(f"Unsupported schema version: {version}")
 
+        # SQLite DDL participates in this transaction. A failed migration
+        # therefore leaves a v1 database, its FTS index, and audit data intact.
         with self.connection:
-            for statement in _SCHEMA:
-                self.connection.execute(statement)
+            if version == 0:
+                self._execute_schema(_V1_SCHEMA)
+                self.connection.execute("PRAGMA user_version = 1")
+                version = 1
+            elif version == 1:
+                # Preserve the historical idempotent bootstrap behaviour for
+                # valid v1 databases before applying the next migration.
+                self._execute_schema(_V1_SCHEMA)
+
+            while version < _SCHEMA_VERSION:
+                self._migrate(version)
+                version += 1
+
+            # A reopened v2 database remains idempotent even if sqlite-vec
+            # availability differs from its original host.
+            if version == _SCHEMA_VERSION:
+                self._execute_schema(_V2_SCHEMA)
+                self._execute_schema(_V3_SCHEMA)
             if self._vec_available:
                 self.connection.execute(_VEC_SCHEMA)
-            self.connection.execute("PRAGMA user_version = 1")
+
+    def _migrate(self, version: int) -> None:
+        if version == 1:
+            self._execute_schema(_V2_SCHEMA)
+            self.connection.execute(
+                """
+                INSERT OR IGNORE INTO decision_metadata(memory_id)
+                SELECT id FROM memories
+                """
+            )
+            self.connection.execute("PRAGMA user_version = 2")
+            return
+        if version == 2:
+            self._execute_schema(_V3_SCHEMA)
+            self.connection.execute("PRAGMA user_version = 3")
+            return
+        raise RuntimeError(f"No migration from schema version: {version}")
+
+    def _execute_schema(self, statements: tuple[str, ...]) -> None:
+        for statement in statements:
+            self.connection.execute(statement)
+
+    def _require_memory(self, memory_id: str) -> None:
+        exists = self.connection.execute(
+            "SELECT 1 FROM memories WHERE id = ?", (memory_id,)
+        ).fetchone()
+        if exists is None:
+            raise ValueError(f"Unknown memory: {memory_id!r}")
+
+    def _require_guard_run(self, run_id: str) -> None:
+        exists = self.connection.execute(
+            "SELECT 1 FROM guard_runs WHERE id = ?", (run_id,)
+        ).fetchone()
+        if exists is None:
+            raise ValueError(f"Unknown guard run: {run_id!r}")
+
+    @staticmethod
+    def _validate_status(status: str) -> None:
+        if status not in _DECISION_STATUSES:
+            raise ValueError(f"Invalid decision status: {status!r}")
+
+    def _record_persistence_redactions(
+        self, entity_type: str, entity_id: str, log: RedactionLog
+    ) -> None:
+        self.connection.executemany(
+            """
+            INSERT INTO persistence_redaction_audit(
+                entity_type, entity_id, timestamp, field, pattern_name,
+                original_snippet, replacement
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    entity_type,
+                    entity_id,
+                    entry.timestamp,
+                    entry.field,
+                    entry.pattern_name,
+                    entry.original_snippet,
+                    entry.replacement,
+                )
+                for entry in log.entries
+            ],
+        )
+
+    @staticmethod
+    def _sanitize(
+        value: str, field_name: str, log: RedactionLog | None = None
+    ) -> str:
+        return sanitize(value, field_name=field_name, log=log)
+
+    @classmethod
+    def _sanitize_optional(
+        cls,
+        value: str | None,
+        field_name: str,
+        log: RedactionLog | None = None,
+    ) -> str | None:
+        return None if value is None else cls._sanitize(value, field_name, log)
+
+    @staticmethod
+    def _validate_guard_run(run: GuardRun) -> None:
+        if not run.id:
+            raise ValueError("guard run id must not be empty")
+        if run.verdict not in _GUARD_VERDICTS:
+            raise ValueError(f"Invalid guard verdict: {run.verdict!r}")
+        if run.payload_tokens < 0:
+            raise ValueError("payload_tokens must be non-negative")
+        if not 0 <= run.confidence <= 1:
+            raise ValueError("confidence must be between 0 and 1")
 
     @staticmethod
     def _validate_scope(scope: str) -> None:

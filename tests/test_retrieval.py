@@ -442,6 +442,23 @@ def test_rrf_rejects_negative_k() -> None:
         rrf_fuse({"bm25": []}, k=-1)
 
 
+def test_model_specific_token_counter_governs_recall_and_validates_output() -> None:
+    with Storage() as storage:
+        add(storage, "m", "alpha beta gamma")
+
+        result = recall(
+            storage,
+            "alpha",
+            max_tokens=3,
+            token_counter=lambda text: len(text.split()),
+        )
+        assert result.used_tokens == 3
+        assert [item.memory.id for item in result.included] == ["m"]
+
+        with pytest.raises(ValueError, match="non-negative"):
+            estimate_tokens("alpha", lambda text: -1)
+
+
 # --------------------------------------------------------------------------- #
 # small local helpers
 # --------------------------------------------------------------------------- #

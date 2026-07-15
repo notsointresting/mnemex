@@ -19,7 +19,7 @@ from dataclasses import dataclass
 
 from mnemex.anchors import check_freshness, FreshnessReport, FreshnessStatus
 from mnemex.indexer import trace_callers
-from mnemex.retrieval import Embedder, recall
+from mnemex.retrieval import Embedder, ScoredMemory, estimate_tokens, recall
 from mnemex.storage import Memory, Storage
 
 __all__ = [
@@ -99,6 +99,15 @@ def why(
     """
     scope_list = list(scopes)
 
+    # Resolve matching structural nodes first. An anchor match is authoritative:
+    # `why authenticate` must find decisions anchored to authenticate even when
+    # the decision text itself does not repeat the symbol name.
+    query_nodes = storage.connection.execute(
+        "SELECT id FROM nodes WHERE name = ? OR file LIKE ?",
+        (symbol_or_file, f"%{symbol_or_file}%"),
+    ).fetchall()
+    query_node_ids = {node_id for (node_id,) in query_nodes}
+
     # 1. Retrieve relevant memories
     result = recall(
         storage,
@@ -118,6 +127,21 @@ def why(
     except ValueError:
         pass
 
+    included = list(result.included)
+    included_ids = {item.memory.id for item in included}
+    used_tokens = result.used_tokens
+    for memory in storage.list_memories(scope_list):
+        if memory.id in included_ids or memory.anchor_node_id not in query_node_ids:
+            continue
+        cost = estimate_tokens(memory.content + "\n" + memory.rationale)
+        if used_tokens + cost > max_tokens:
+            continue
+        included.append(
+            ScoredMemory(memory, 1.0, len(included) + 1, ("anchor",))
+        )
+        included_ids.add(memory.id)
+        used_tokens += cost
+
     decisions = tuple(
         DecisionInfo(
             memory_id=sm.memory.id,
@@ -126,18 +150,12 @@ def why(
             anchor_node_id=sm.memory.anchor_node_id,
             freshness=freshness_map.get(sm.memory.id, "unanchored"),
         )
-        for sm in result.included
+        for sm in included
     )
 
     # 3. Gather callers from the structural graph
     callers_list: list[CallerInfo] = []
     seen_nodes: set[str] = set()
-
-    # Find nodes matching the query (by name)
-    query_nodes = storage.connection.execute(
-        "SELECT id FROM nodes WHERE name = ? OR file LIKE ?",
-        (symbol_or_file, f"%{symbol_or_file}%"),
-    ).fetchall()
 
     for (node_id,) in query_nodes:
         if node_id in seen_nodes:
@@ -156,7 +174,7 @@ def why(
         query=symbol_or_file,
         decisions=decisions,
         callers=tuple(callers_list),
-        used_tokens=result.used_tokens,
+        used_tokens=used_tokens,
     )
 
 

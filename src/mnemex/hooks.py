@@ -11,7 +11,7 @@ Token caps are hard limits enforced via the retrieval module's governor:
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -24,6 +24,9 @@ __all__ = [
     "session_start",
     "pre_tool_use",
     "stop_capture",
+    "StopDecisionSuggestion",
+    "suggest_stop_decision",
+    "confirm_stop_suggestion",
     "SESSION_TOKEN_CAP",
     "JIT_TOKEN_CAP",
 ]
@@ -41,6 +44,15 @@ class HookResult:
     budget_tokens: int
     memory_count: int
     mode: str
+
+
+@dataclass(frozen=True, slots=True)
+class StopDecisionSuggestion:
+    """A non-persistent candidate captured from a Stop-hook transcript."""
+
+    content: str
+    origin: str
+    requires_confirmation: bool = True
 
 
 def session_start(
@@ -177,6 +189,60 @@ def stop_capture(
         redaction_log=redactions,
     )
     return memory.id
+
+
+def suggest_stop_decision(
+    completed_action: str,
+    *,
+    extractor: Callable[[str], str | None] | None = None,
+    origin: str | None = None,
+) -> StopDecisionSuggestion | None:
+    """Extract a candidate decision without persisting it.
+
+    ``extractor`` may be backed by a heuristic or an external model, but its
+    output is only a suggestion.  Call :func:`confirm_stop_suggestion` with
+    explicit confirmation before it can enter local memory.
+    """
+    if not completed_action or not completed_action.strip():
+        return None
+    candidate = (
+        _heuristic_stop_suggestion(completed_action)
+        if extractor is None
+        else extractor(completed_action)
+    )
+    if not candidate or not candidate.strip():
+        return None
+    return StopDecisionSuggestion(
+        content=sanitize(candidate.strip(), field_name="stop_suggestion"),
+        origin=(
+            "heuristic"
+            if origin is None and extractor is None
+            else (origin or "extractor")
+        ),
+    )
+
+
+def confirm_stop_suggestion(
+    storage: Storage,
+    suggestion: StopDecisionSuggestion,
+    *,
+    confirmed: bool,
+    scope: str = "project-shared",
+    source: str = "agent-confirmed",
+) -> str | None:
+    """Persist a Stop suggestion only after an explicit confirmation."""
+    if not confirmed:
+        return None
+    return stop_capture(storage, suggestion.content, scope=scope, source=source)
+
+
+def _heuristic_stop_suggestion(completed_action: str) -> str:
+    """Keep the deterministic default deliberately modest and inspectable."""
+    for line in completed_action.splitlines():
+        candidate = line.strip()
+        if candidate:
+            return candidate
+    return ""
 
 
 def _format_brief(memories: list[Memory]) -> list[str]:

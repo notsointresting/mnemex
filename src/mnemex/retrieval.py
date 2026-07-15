@@ -72,7 +72,9 @@ class RecallResult:
     mode: str
 
 
-def estimate_tokens(text: str) -> int:
+def estimate_tokens(
+    text: str, token_counter: Callable[[str], int] | None = None
+) -> int:
     """Estimate the token cost of ``text``.
 
     Deterministic, monotonic non-decreasing in ``len(text)``, ``0`` for the
@@ -85,7 +87,12 @@ def estimate_tokens(text: str) -> int:
     exact signature without touching callers.
     """
 
-    return (len(text) + 3) // 4
+    if token_counter is None:
+        return (len(text) + 3) // 4
+    count = token_counter(text)
+    if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+        raise ValueError("token_counter must return a non-negative integer")
+    return count
 
 
 def _combine_text(content: str, rationale: str) -> str:
@@ -365,6 +372,7 @@ def govern_memories(
     *,
     max_tokens: int | None,
     mode: str,
+    token_counter: Callable[[str], int] | None = None,
 ) -> RecallResult:
     """Apply the standard token governor to an already-selected memory set."""
     if max_tokens is not None and max_tokens < 0:
@@ -380,7 +388,9 @@ def govern_memories(
             rank=rank,
             signals=("anchor-file",),
         )
-        cost = estimate_tokens(_combine_text(memory.content, memory.rationale))
+        cost = estimate_tokens(
+            _combine_text(memory.content, memory.rationale), token_counter
+        )
         if max_tokens is None or used_tokens + cost <= max_tokens:
             included.append(scored)
             used_tokens += cost
@@ -405,6 +415,7 @@ def recall(
     limit: int = 10,
     max_tokens: int | None = None,
     rrf_k: int = 60,
+    token_counter: Callable[[str], int] | None = None,
 ) -> RecallResult:
     """Hybrid recall with a hard token governor.
 
@@ -466,7 +477,9 @@ def recall(
         scored = ScoredMemory(
             memory=memory, score=score, rank=rank, signals=signals
         )
-        cost = estimate_tokens(_combine_text(memory.content, memory.rationale))
+        cost = estimate_tokens(
+            _combine_text(memory.content, memory.rationale), token_counter
+        )
         if max_tokens is None or used_tokens + cost <= max_tokens:
             included.append(scored)
             used_tokens += cost
