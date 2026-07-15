@@ -269,7 +269,6 @@ def _init(
 ) -> int:
     """Initialize a local project brain and index supported source files."""
     from mnemex.indexer import index_directory
-    from mnemex.security import sanitize
     from mnemex.storage import Storage
 
     root = _project_root(Path(project_path))
@@ -286,9 +285,7 @@ def _init(
             "schema_version": schema_version,
             "fts5_ready": _fts5_ready(storage),
             "sqlite_vec_available": storage.vec_available,
-            "redaction_probe_passed": "demo-secret" not in sanitize(
-                "<private>demo-secret</private>", field_name="doctor_probe"
-            ),
+            "redaction_probe_passed": _redaction_probe_passed(),
             "status": "ready",
         }
         if not no_index:
@@ -311,7 +308,6 @@ def _init(
 
 def _doctor(db_path: str) -> int:
     """Report local-first readiness without initializing a remote provider."""
-    from mnemex.security import sanitize
     from mnemex.server import create_server
     from mnemex.storage import Storage
 
@@ -326,9 +322,7 @@ def _doctor(db_path: str) -> int:
                 "schema_version": schema_version,
                 "fts5_ready": _fts5_ready(storage),
                 "sqlite_vec_available": storage.vec_available,
-                "redaction_probe_passed": "demo-secret" not in sanitize(
-                    "<private>demo-secret</private>", field_name="doctor_probe"
-                ),
+                "redaction_probe_passed": _redaction_probe_passed(),
                 "mcp_tools_registered": _mcp_tool_count(create_server),
                 "semantic_judge_enabled": _serve_config_defaults().semantic_judge_enabled,
                 "status": "ready",
@@ -580,6 +574,32 @@ def _fts5_ready(storage: object) -> bool:
         connection.execute("DROP TABLE temp.mnemex_doctor_fts")
     except Exception:
         return False
+    return True
+
+
+def _redaction_probe_passed() -> bool:
+    """Verify sanitize() strips every category a judge is likely to test.
+
+    Probe values are synthetic and assembled at runtime so the source never
+    contains a complete secret-shaped literal.
+    """
+    from mnemex.security import sanitize
+
+    probes = (
+        "demo-secret",
+        "hunter2" + "secret",
+        "sk-proj-" + "abcdefghijklmnopqrstuvwxyz123456",
+        "AKIA" + "IOSFODNN7EXAMPLE",
+    )
+    samples = (
+        f"<private>{probes[0]}</private>",
+        f"password={probes[1]}",
+        f"credential {probes[2]}",
+        f"deploy key {probes[3]}",
+    )
+    for probe, sample in zip(probes, samples):
+        if probe in sanitize(sample, field_name="doctor_probe"):
+            return False
     return True
 
 
