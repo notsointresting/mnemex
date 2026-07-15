@@ -113,6 +113,23 @@ _SECRET_CORPUS = [
     (lambda: _assign("API_SECRET", ": ", _j("FAKESECRETVALUE", "1234567890XY")), "api_key_assignment"),
     (lambda: _assign("access_token", "='", _j("FAKEACCESSTOKEN", "value1234567") + "'"), "api_key_assignment"),
     (lambda: _assign("auth_token", ":", _j("FAKEAUTHTOKEN", "value1234567890")), "api_key_assignment"),
+    # Password/secret assignments
+    (lambda: _assign("password", "=", _j("hunter2", "secret")), "password_assignment"),
+    (lambda: _assign("PASSWD", ": ", _j("shortpw", "value")), "password_assignment"),
+    (lambda: _assign("pwd", "='", _j("fakepw", "1234") + "'"), "password_assignment"),
+    (lambda: _assign("secret", "=", _j("notso", "secretvalue")), "password_assignment"),
+    # Anthropic keys
+    (lambda: _j("sk-ant-", "api03-FAKEVALUE", "abcdefghij1234567890"), "anthropic_key"),
+    # OpenAI keys
+    (lambda: _j("sk-", "proj-FAKEVALUE", "abcdefghij1234567890"), "openai_key"),
+    (lambda: _j("sk-", "FAKEVALUEabcdefghij", "1234567890"), "openai_key"),
+    # Google API keys
+    (lambda: _j("AIza", "SyFAKEVALUEabcdefghij", "1234567890"), "google_api_key"),
+    # Stripe keys
+    (lambda: _j("sk_live_", "FAKEVALUEabcdefg", "1234"), "stripe_key"),
+    (lambda: _j("rk_test_", "FAKEVALUEabcdefg", "1234"), "stripe_key"),
+    # Slack tokens
+    (lambda: _j("xoxb-", "123456789012-FAKEVALUE", "abcdefgh"), "slack_token"),
     # Email addresses (PII, synthetic example.com domains)
     (lambda: _j("john.doe", "@", "example.com"), "email"),
     (lambda: _j("admin+test", "@", "corp.example.com"), "email"),
@@ -166,6 +183,12 @@ class TestSecretCorpus100PercentStripRate:
             "jwt_token",
             "connection_string",
             "api_key_assignment",
+            "password_assignment",
+            "anthropic_key",
+            "openai_key",
+            "google_api_key",
+            "stripe_key",
+            "slack_token",
             "email",
             "phone_number",
             "ipv4_address",
@@ -356,3 +379,34 @@ class TestEdgeCases:
         large += "More safe content. " * 5000
         result = sanitize(large)
         assert aws not in result
+
+
+class TestFalsePositiveExemptions:
+    """Legitimate developer text must survive sanitization unmangled."""
+
+    def test_commit_sha_reference_survives(self) -> None:
+        sha = "a" * 20 + "b" * 20  # 40 hex chars, git-SHA shaped
+        text = f"Fixed in commit {sha} last week."
+        assert sanitize(text) == text
+
+    def test_bare_hex_token_still_redacted(self) -> None:
+        token = "c" * 20 + "d" * 20  # same shape, no commit prefix
+        result = sanitize(f"token {token} leaked")
+        assert token not in result
+        assert "[REDACTED" in result
+
+    def test_loopback_and_unspecified_ips_survive(self) -> None:
+        text = "Bind the HTTP server to 127.0.0.1 or 0.0.0.0 locally."
+        assert sanitize(text) == text
+
+    def test_routable_ip_still_redacted(self) -> None:
+        result = sanitize(_j("Server at 203.0.", "113.7 responded."))
+        assert "203.0.113.7" not in result
+        assert "[REDACTED:ip]" in result
+
+    def test_secret_key_assignment_still_covered(self) -> None:
+        # secret_key= must keep matching api_key_assignment, not be
+        # swallowed incorrectly by the new bare-word password pattern.
+        value = _j("FAKESECRETKEY", "VALUE1234567")
+        result = sanitize(_assign("secret_key", "=", value))
+        assert value not in result

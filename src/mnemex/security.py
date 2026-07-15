@@ -76,10 +76,14 @@ _SECRET_PATTERNS: list[tuple[str, re.Pattern[str], str]] = [
         re.compile(r"(?:AKIA|ASIA)[A-Z0-9]{16}"),
         "[REDACTED:aws_key]",
     ),
-    # AWS secret keys (40 chars base64)
+    # AWS secret keys (40 chars base64). Git-style references
+    # ("commit <sha>") are exempt: a 40-hex SHA is also 40 base64 chars.
     (
         "aws_secret_key",
-        re.compile(r"(?<![A-Za-z0-9+/])[A-Za-z0-9+/]{40}(?![A-Za-z0-9+/=])"),
+        re.compile(
+            r"(?<![A-Za-z0-9+/])(?<!commit )(?<!Commit )"
+            r"[A-Za-z0-9+/]{40}(?![A-Za-z0-9+/=])"
+        ),
         "[REDACTED:aws_secret]",
     ),
     # GitHub tokens (classic PAT, fine-grained, oauth)
@@ -87,6 +91,44 @@ _SECRET_PATTERNS: list[tuple[str, re.Pattern[str], str]] = [
         "github_token",
         re.compile(r"gh[pousr]_[A-Za-z0-9_]{36,255}"),
         "[REDACTED:github_token]",
+    ),
+    # Password/secret assignments (password=..., pwd: ...)
+    (
+        "password_assignment",
+        re.compile(
+            r"(?i)\b(?:password|passwd|pwd|secret)\s*[:=]\s*['\"]?([^\s'\"]{4,})['\"]?"
+        ),
+        "[REDACTED:password]",
+    ),
+    # Anthropic API keys (must precede openai_key: shared "sk-" prefix)
+    (
+        "anthropic_key",
+        re.compile(r"\bsk-ant-[A-Za-z0-9_\-]{20,}\b"),
+        "[REDACTED:anthropic_key]",
+    ),
+    # OpenAI API keys (sk-..., sk-proj-...)
+    (
+        "openai_key",
+        re.compile(r"\bsk-(?:proj-)?[A-Za-z0-9_\-]{20,}\b"),
+        "[REDACTED:openai_key]",
+    ),
+    # Google API keys
+    (
+        "google_api_key",
+        re.compile(r"\bAIza[A-Za-z0-9_\-]{30,40}\b"),
+        "[REDACTED:google_key]",
+    ),
+    # Stripe secret/restricted keys
+    (
+        "stripe_key",
+        re.compile(r"\b[sr]k_(?:live|test)_[A-Za-z0-9]{16,}\b"),
+        "[REDACTED:stripe_key]",
+    ),
+    # Slack tokens
+    (
+        "slack_token",
+        re.compile(r"\bxox[baprs]-[A-Za-z0-9\-]{10,}\b"),
+        "[REDACTED:slack_token]",
     ),
     # Generic API keys (key=... or key: ...)
     (
@@ -129,10 +171,15 @@ _SECRET_PATTERNS: list[tuple[str, re.Pattern[str], str]] = [
         ),
         "[REDACTED:connection_string]",
     ),
-    # Generic hex secrets (32+ hex chars that look like tokens)
+    # Generic hex secrets (32+ hex chars that look like tokens).
+    # Git-style references ("commit <sha>") are exempt so decisions can cite
+    # commit hashes without being mangled.
     (
         "hex_secret",
-        re.compile(r"(?<![a-fA-F0-9])[a-fA-F0-9]{32,64}(?![a-fA-F0-9])"),
+        re.compile(
+            r"(?<![a-fA-F0-9])(?<!commit )(?<!Commit )"
+            r"[a-fA-F0-9]{32,64}(?![a-fA-F0-9])"
+        ),
         "[REDACTED:hex_token]",
     ),
     # Email addresses (PII)
@@ -149,11 +196,13 @@ _SECRET_PATTERNS: list[tuple[str, re.Pattern[str], str]] = [
         ),
         "[REDACTED:phone]",
     ),
-    # IP addresses (IPv4)
+    # IP addresses (IPv4). Loopback and the unspecified address are not PII
+    # and appear in this project's own documentation, so they are exempt.
     (
         "ipv4_address",
         re.compile(
-            r"(?<!\d)\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}(?!\d)"
+            r"(?<!\d)(?!127\.)(?!0\.0\.0\.0(?!\d))"
+            r"\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}(?!\d)"
         ),
         "[REDACTED:ip]",
     ),
