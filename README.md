@@ -1,286 +1,229 @@
-# mnemex — Anchored Memory for AI Coding Agents
+# mnemex
 
-> **The MCP server that gives coding agents persistent, anchored memory — every decision bound to the exact line it's about, delivered just-in-time.**
+**Local-first decision integrity for coding agents.**
 
-[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://python.org)
-[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
-[![MCP Compatible](https://img.shields.io/badge/MCP-compatible-purple.svg)](https://modelcontextprotocol.io)
+Mnemex records a software decision against a code symbol and its content hash.
+When that code moves, changes, or disappears, the decision becomes reviewable
+instead of silently becoming stale context. MCP tools and the CLI retrieve only
+the evidence needed for the current change.
 
-## What is mnemex?
+It is not a generic chat-memory store. Its core unit is an auditable decision:
 
-**mnemex** is a local-first [Model Context Protocol (MCP)](https://modelcontextprotocol.io) server that solves the #1 pain point of AI coding agents: **they forget everything between sessions.**
-
-Unlike simple memory stores, mnemex **anchors** every decision to a specific file and symbol in your codebase, stamps it with a content hash, and delivers relevant context **just-in-time** — the moment your agent touches that file — not as a wasteful session-start dump.
-
-### The Problem
-
-AI coding agents (Claude Code, Codex CLI, Cursor, Windsurf, Gemini CLI) suffer from two types of forgetting:
-
-- **Fact forgetting** — "We decided to use JWT for auth" is lost between sessions
-- **Shape forgetting** — "The auth module uses this specific pattern because..." vanishes every time
-
-This leads to agents re-asking the same questions, contradicting past decisions, and wasting thousands of tokens re-reading files they already understood.
-
-### The Solution
-
-mnemex provides:
-
-| Feature | What it does |
-|---------|-------------|
-| **Decision anchors** | Every memory is bound to a file + symbol + content hash |
-| **Just-in-time delivery** | Context injected via PreToolUse hook at edit time (≤400 tokens) |
-| **Automatic staleness** | When anchored code changes, memories are flagged stale |
-| **Hybrid retrieval** | BM25 + vector (sqlite-vec) fused via RRF — no ML model required |
-| **Token governor** | Hard caps (800 session / 400 JIT) — never exceeds budget |
-| **Secret stripping** | PII and credentials stripped deterministically at write time |
-| **Self-updating AGENTS.md** | Auto-generates and maintains the cross-agent config file |
-
-## Quick Start
-
-### Installation
-
-```bash
-pip install mnemex
+```text
+decision -> code symbol -> content hash -> freshness -> evidence for an edit
 ```
 
-No ML model download required. Works immediately in BM25-only mode.
+## Why It Matters
 
-### Run the MCP Server
+Coding agents can remember a sentence such as "authentication is stateless" but
+still lose track of the code it governed and whether that code has changed.
+Mnemex keeps those facts connected:
 
-```bash
-python -m mnemex serve --db project.sqlite3
-```
+- Decisions can be anchored to indexed Python or TypeScript/TSX symbols.
+- Fresh, stale, and orphaned anchors are reported separately.
+- `why` combines anchored decisions with caller context.
+- The optional semantic guard records evidence, verdicts, and overrides. It
+  blocks only a fresh, cited `contradiction` at confidence `>= 0.90`.
 
-### Configure in Claude Code
-
-Add to your MCP settings:
-
-```json
-{
-  "mcpServers": {
-    "mnemex": {
-      "command": "python",
-      "args": ["-m", "mnemex", "serve", "--db", "project.sqlite3"]
-    }
-  }
-}
-```
-
-### Basic Usage
-
-```python
-from mnemex.storage import Storage
-from mnemex.anchors import remember, check_freshness
-from mnemex.retrieval import recall
-
-# Open the brain
-storage = Storage("project.sqlite3")
-
-# Remember a decision, anchored to code
-remember(storage, "Use signed cookies for auth sessions",
-         anchor=Anchor(file="src/auth.py", symbol="authenticate"),
-         rationale="Keeps request handling stateless")
-
-# Recall relevant context (BM25, no ML needed)
-result = recall(storage, "authentication sessions", max_tokens=400)
-
-# Check what's gone stale
-reports = check_freshness(storage)
-for r in reports:
-    if r.status == "stale":
-        print(f"⚠️  {r.memory_id} — code changed since decision was made")
-```
+Core storage, indexing, retrieval, freshness, and deterministic constraints
+stay local in SQLite. The OpenAI semantic judge is optional and disabled by
+default.
 
 ## Architecture
 
-```
-┌──────────────────────────────────────────────────────┐
-│                    mnemex (core)                       │
-│                                                       │
-│   ┌───────────────────────────────────────────────┐   │
-│   │              ONE SQLite file                   │   │
-│   │  ┌──────────────┐   ┌─────────────────────┐  │   │
-│   │  │  structural  │◀──│  episodic memories   │  │   │
-│   │  │  nodes/edges │ANCHOR decisions/conventions│  │   │
-│   │  │  (hash)      │   │  + vec + fts5        │  │   │
-│   │  └──────────────┘   └─────────────────────┘  │   │
-│   └───────────────────────────────────────────────┘   │
-│           │                                           │
-│   Fusion engine (RRF) · Token governor · Staleness    │
-│           │                                           │
-│   ┌───────▼───────────────────────────────────────┐   │
-│   │      MCP server (FastMCP) + HOOKS             │   │
-│   │  SessionStart · PreToolUse · Stop             │   │
-│   └───────────────────────────────────────────────┘   │
-└───────────────────────┬───────────────────────────────┘
-                        │ MCP (stdio)
-        ┌───────────────┼───────────────┐
-   Claude Code      Codex CLI       Cursor/Windsurf
+```text
+source files
+    | index
+    v
+symbols + calls + imports -----------------------+
+    | content hashes                             |
+    v                                            |
+anchored decisions in one SQLite database        |
+    |                                             |
+    +-- freshness / lifecycle / provenance       |
+    +-- bounded retrieval / JIT context           |
+    +-- optional semantic guard <-----------------+
+    |
+MCP (stdio or local HTTP) + CLI + project brain bundles
 ```
 
-**One SQLite file. No cloud. No ML required. Local-first.**
+## Quick Start From This Checkout
 
-## MCP Tools (10 tools)
-
-| Tool | Description |
-|------|-------------|
-| `remember_decision` | Store a decision, optionally anchored to code |
-| `recall_memories` | Hybrid BM25+vector retrieval with token governor |
-| `forget_memory` | Remove a memory by ID |
-| `check_memory_freshness` | Report fresh/stale/orphaned status |
-| `context_for` | JIT context for a file (≤400 tokens) |
-| `get_context_brief` | Session-start brief (≤800 tokens) |
-| `why` | Explain why a symbol is designed this way (decision + callers) |
-| `trace_callers_tool` | Who calls/references this symbol |
-| `index_path` | Index files into the structural graph |
-| `generate_agents_md` | Auto-generate AGENTS.md |
-
-## Key Concepts
-
-### Decision Anchors
-
-Every memory can be **anchored** to a structural location (file + symbol). When that code changes, the memory is automatically flagged stale:
-
-- **Fresh** — the anchored code hasn't changed
-- **Stale** — the code changed; the decision may need revisiting
-- **Orphaned** — the anchored symbol was deleted
-- **Unanchored** — a global fact not tied to specific code
-
-### Token Governor
-
-mnemex **guarantees** it never exceeds your token budget:
-
-- Session start brief: ≤800 tokens
-- JIT (PreToolUse) injection: ≤400 tokens
-- Memories that don't fit are **dropped** (not truncated), and reported
-
-### No-ML Mode
-
-Works out of the box with **zero model download**. BM25 (FTS5) handles keyword retrieval. When you add an embedder, it upgrades to hybrid BM25+vector via Reciprocal Rank Fusion automatically.
-
-### Security
-
-Secrets and PII are stripped **at write time** before persistence:
-- AWS keys, GitHub tokens, JWTs, PEM private keys
-- Connection strings with passwords
-- Email addresses, phone numbers, IP addresses
-- `<private>` tagged blocks are removed entirely
-- Every redaction is recorded in an audit log
-
-## Benchmarks
-
-On mnemex's own source (10 Python files, 120 nodes):
-
-| Metric | Value |
-|--------|-------|
-| Baseline tokens (reading files) | 20,944 |
-| JIT tokens (session + 5 contexts) | 370 |
-| **Token savings** | **98.2%** |
-| **Compression ratio** | **56.6×** |
-| Index time | 0.07s |
-| JIT latency | 0.9ms |
-
-## CLI
+Mnemex is installable from source and works without an embedding model, an
+OpenAI key, or network access after dependencies are installed.
 
 ```bash
-# Run the MCP server
-python -m mnemex serve --db project.sqlite3
-
-# Index a codebase
-python -m mnemex index ./src --db project.sqlite3
-
-# Run benchmarks
-python -m mnemex benchmark ./src
+python -m pip install .
+mnemex init . --db .mnemex/mnemex.sqlite3
+mnemex doctor --db .mnemex/mnemex.sqlite3
 ```
 
-## Works With
-
-mnemex is compatible with any MCP-supporting agent:
-
-- **Claude Code** (hooks: SessionStart + PreToolUse)
-- **Codex CLI** (MCP tools)
-- **Cursor** (MCP tools)
-- **Windsurf** (MCP tools)
-- **Gemini CLI** (MCP tools)
-- **Cline / Roo Code** (MCP tools)
-- **Any MCP client** (stdio transport)
-
-## Project Structure
-
-```
-src/mnemex/
-├── storage.py      # SQLite + sqlite-vec + FTS5 schema
-├── anchors.py      # Anchor resolution + hash stamping + staleness
-├── retrieval.py    # BM25 + vector RRF fusion + token governor
-├── indexer.py      # Structural backend adapter (Python AST)
-├── server.py       # FastMCP server (10 tools)
-├── hooks.py        # SessionStart / PreToolUse / Stop hooks
-├── agents_md.py    # why() fusion + AGENTS.md generator + staleness watcher
-├── security.py     # Secret stripping + audit log
-└── __main__.py     # CLI entry point
-```
-
-## Development
+For editable development:
 
 ```bash
-# Install with dev dependencies
-pip install -e ".[dev]"
-
-# Run linter
-python -m ruff check .
-
-# Run tests (145 tests)
-python -m pytest -v
+python -m pip install -e ".[dev]"
+python -m ruff check src tests tools
+python -m pytest -q
 ```
 
-## Comparison with Alternatives
+The CI workflow exercises Python 3.10-3.13 on Linux, macOS, and Windows,
+builds a wheel, and performs a clean-install smoke test.
 
-| Feature | mnemex | agentmemory | codebase-memory | engram |
-|---------|--------|-------------|-----------------|--------|
-| Anchored to code symbols | ✅ | ❌ | ❌ | ❌ |
-| Automatic staleness detection | ✅ | ❌ | ❌ | ❌ |
-| JIT hook injection | ✅ | ❌ | ❌ | ❌ |
-| Token budget governor | ✅ | ❌ | ❌ | ❌ |
-| No ML required | ✅ | ❌ | ✅ | ✅ |
-| One SQLite file | ✅ | ❌ | ❌ | ✅ |
-| Secret stripping at write | ✅ | ❌ | ❌ | ❌ |
-| Self-updating AGENTS.md | ✅ | ❌ | ❌ | ❌ |
-| MCP server | ✅ | ✅ | ✅ | ✅ |
+## Demo Modes
 
-## FAQ
+### Local evidence demo
 
-### How is mnemex different from just using CLAUDE.md?
+```bash
+mnemex demo --offline
+```
 
-CLAUDE.md is static and manually maintained. mnemex:
-- Automatically detects when decisions go stale (code changed)
-- Delivers only relevant context per-file (not everything at session start)
-- Respects token budgets (CLAUDE.md grows without bound)
-- Works across all MCP-supporting agents (not just Claude)
+This no-network demo indexes `authenticate`, creates an explicitly tagged
+stateless-authentication constraint, and proposes Redis-backed server sessions.
+It deterministically reports **BLOCKED**, records an explicit override,
+supersedes the decision, changes the anchor, and then reports staleness. Use
+`--json` when a recording or test needs structured output.
 
-### Does it need a GPU or embedding model?
+### Optional semantic guard
 
-No. mnemex works in **no-ML mode** (BM25 keyword search) by default. You can optionally provide an embedder for hybrid retrieval, but it's not required.
+Install the optional dependency and set credentials only for a semantic check:
 
-### How does the token governor work?
+```bash
+python -m pip install ".[openai]"
+set OPENAI_API_KEY=...
+set MNEMEX_SEMANTIC_JUDGE_ENABLED=true
+mnemex serve --db .mnemex/mnemex.sqlite3 --semantic-judge
+mnemex demo --semantic --json
+```
 
-Every injection path takes a hard `max_tokens` budget. The governor ranks memories by relevance, includes them in order while the running sum fits, and **drops** (never truncates) memories that exceed the cap. It reports what was dropped so the agent can request more if needed.
+On PowerShell, use `$env:OPENAI_API_KEY` and
+`$env:MNEMEX_SEMANTIC_JUDGE_ENABLED = "true"`. The provider uses the OpenAI
+Responses API with the configured model. Missing credentials, a timeout, or
+malformed provider output produces `unavailable` or `uncertain`; it never
+blocks an edit. Every remote payload is sanitized, capped, and summarized in
+the guard result.
 
-### What happens when I refactor code?
+## Codex MCP Setup
 
-Anchored memories are automatically flagged **stale** when their symbol's content hash changes, and **orphaned** when the symbol is deleted. The agent sees these flags and can reconcile (update or remove the decision).
+Run the server with stdio:
+
+```bash
+mnemex serve --db .mnemex/mnemex.sqlite3
+```
+
+Or create only the Mnemex entry in an explicit project config:
+
+```bash
+mnemex init . --db .mnemex/mnemex.sqlite3 --codex-config .codex/config.toml
+```
+
+The configured server entry is equivalent to:
+
+```toml
+[mcp_servers.mnemex]
+command = "python"
+args = ["-m", "mnemex", "serve", "--db", ".mnemex/mnemex.sqlite3"]
+```
+
+Codex is the first verified live-client integration. The repository also has a
+subprocess test for MCP initialize, tool listing, and tool invocation.
+
+## Core Workflows
+
+```bash
+mnemex init . --db project.sqlite3
+mnemex index ./src --db project.sqlite3
+mnemex check src/auth.py "Move sessions to the server" --db project.sqlite3 --enforce-constraints
+mnemex why authenticate --db project.sqlite3
+mnemex review --db project.sqlite3
+mnemex dashboard --db project.sqlite3
+mnemex export project-brain.zip <memory-id> --db project.sqlite3
+mnemex import project-brain.zip --db another-project.sqlite3
+```
+
+MCP exposes `remember_decision`, `check_proposed_change`,
+`override_decision_guard`, `reconcile_stale_decision`, `why`,
+`review_conflicts`, `context_for`, `export_brain`, and `import_brain`,
+alongside retrieval, freshness, indexing, caller tracing, and AGENTS.md
+generation.
+
+### Deterministic constraints
+
+An active decision becomes a local deterministic rule only when explicitly
+tagged. For example, a decision stored through `remember_decision` with:
+
+```text
+tags: constraint:forbidden:server-side session
+```
+
+is reported by `check_proposed_change`. Add `--enforce-constraints` to the CLI
+check workflow to block a fresh violation deterministically. Untagged decisions
+remain advisory. This separation keeps local rules inspectable and prevents a
+semantic provider from silently creating policy.
+
+## Cross-Agent Continuity
+
+The runnable walkthrough in
+[examples/cross-agent-demo](examples/cross-agent-demo/README.md) demonstrates
+two clients sharing a decision history through an explicit project-brain bundle:
+
+1. Client A indexes `authenticate` and stores an anchored decision through MCP.
+2. Client A exports the selected record from its SQLite brain.
+3. Client B imports it into a separate SQLite brain.
+4. Client B uses `why authenticate` and receives the same decision, anchor, and
+   caller context, with immediate freshness validation.
+
+The bundle contains selected records, anchors, hashes, provenance, audit data,
+and optional AGENTS.md text. It does not copy a raw SQLite database.
+
+## Security And Boundaries
+
+- Secrets, common PII, and `<private>` sections are sanitized before storage.
+- Session briefs are capped at 800 estimated tokens; JIT context is capped at
+  400.
+- Local mode makes no OpenAI request.
+- Local HTTP MCP has no built-in authentication. Bind it to `127.0.0.1` or use
+  an authenticated gateway before exposing it outside the machine.
+- Bundle import validates its contents and reports current anchor freshness.
+
+## Agent Skill
+
+After the npm package is explicitly published, install the project skill with
+Node 18 or later:
+
+```bash
+npx @mnemex/skills .agents/skills/mnemex
+```
+
+The npm package remains private in this checkout. Run the installer directly
+instead:
+
+```bash
+node npm/mnemex-skills/bin/mnemex-skills.cjs .agents/skills/mnemex
+```
+
+## Evidence And Benchmarks
+
+The checked-in benchmark is a **context-delivery microbenchmark**, not a claim
+about autonomous-agent quality or general token savings. It compares a bounded
+raw-file exploration baseline with Mnemex's session brief plus JIT contexts on
+three public repositories at recorded commits. Method, commands, and all
+numbers are in
+[benchmarks/2026-07-15-three-repositories.md](benchmarks/2026-07-15-three-repositories.md).
+
+## Release Artifacts
+
+The repository's CI builds a wheel and a portable source bundle. To create
+local artifacts:
+
+```bash
+python -m pip install build
+python -m build --wheel
+python tools/build_release_bundle.py
+```
+
+External publishing to PyPI, npm, or GitHub Releases is a deployment action;
+it is not performed by this repository.
 
 ## License
 
-MIT
-
-## Contributing
-
-Contributions welcome. Please ensure:
-- `python -m ruff check .` passes
-- `python -m pytest` passes (145+ tests)
-- New features include tests
-- Security-sensitive changes require Phase 6 gate validation
-
----
-
-**mnemex** — *Not another memory list. A brain that anchors every decision to the exact line it's about — and hands it back the instant your agent touches that line.*
+[MIT](LICENSE)

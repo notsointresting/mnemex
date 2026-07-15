@@ -1,0 +1,31 @@
+{
+  "name": "@mnemex/skills",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Install the local mnemex coding-agent skill",
+  "license": "MIT",
+  "homepage": "https://github.com/nkm-ets/mnemex#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/nkm-ets/mnemex.git",
+    "directory": "npm/mnemex-skills"
+  },
+  "bugs": {
+    "url": "https://github.com/nkm-ets/mnemex/issues"
+  },
+  "keywords": [
+    "mcp",
+    "coding-agent",
+    "codex",
+    "decision-integrity",
+    "local-first",
+    "mnemex"
+  ],
+  "bin": {
+    "mnemex-skills": "bin/mnemex-skills.cjs"
+  },
+  "files": ["bin", "SKILL.md"],
+  "engines": {
+    "node": ">=18"
+  }
+}
