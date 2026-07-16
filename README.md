@@ -234,6 +234,27 @@ python tools/build_release_bundle.py
 External publishing to PyPI, npm, or GitHub Releases is a deployment action;
 it is not performed by this repository.
 
+## Built With Codex
+
+Mnemex was built in collaboration with OpenAI Codex using GPT-5.6, and GPT-5.6
+also runs inside the product as the opt-in semantic judge.
+
+- **Where Codex accelerated:** SQLite schema and migrations, MCP tool
+  workflows, the structural indexer, cross-platform test coverage, the
+  deterministic demo, and release checks.
+- **Where the human made the key calls:** keeping the block deterministic by
+  default and gating the LLM behind the anchor layer; the local-first
+  constraint (no network call in local mode); anchoring decision validity to
+  symbol content hashes; treating judge output as bounded evidence rather than
+  policy.
+- **The judge's own division of labor mirrors the build:** deterministic code
+  selects and bounds the evidence; GPT-5.6 makes only the semantic call — see
+  [examples/violation-vs-evolution](examples/violation-vs-evolution/README.md).
+
+<!-- FILL before submission: Codex session ID for the core build thread, and
+     one or two sentences citing a specific decision made in a Codex session
+     (e.g. the deterministic-by-default tradeoff), per the submission rules. -->
+
 ## License
 
 [MIT](LICENSE)
