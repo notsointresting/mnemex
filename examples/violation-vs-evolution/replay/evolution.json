@@ -1,0 +1,5 @@
+{
+  "verdict": "compatible",
+  "confidence": 0.93,
+  "explanation": "The refactor moves the idempotency-key validation and duplicate check into a helper called before the ledger write. The guarantee that retries cannot double-charge is preserved; the decision is not violated."
+}

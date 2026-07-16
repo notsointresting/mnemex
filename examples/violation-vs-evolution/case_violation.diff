@@ -1,0 +1,15 @@
+--- a/src/payments.py
++++ b/src/payments.py
+@@ def process_payment(order_id, amount, idempotency_key):
+-    if not idempotency_key:
+-        raise ValueError("idempotency key is required")
+-    if _already_charged(idempotency_key):
+-        return {"status": "duplicate", "order_id": order_id}
+-    _write_ledger(order_id, amount, idempotency_key)
++    for attempt in range(3):
++        try:
++            _write_ledger(order_id, amount, idempotency_key)
++            break
++        except TransientLedgerError:
++            continue
+     return {"status": "charged", "order_id": order_id, "amount": amount}

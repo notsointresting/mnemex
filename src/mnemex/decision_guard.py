@@ -126,7 +126,9 @@ def check_proposed_change(
             provider=(
                 "deterministic-constraints"
                 if enforce_constraints and judgment.model == "deterministic-constraints"
-                else "openai" if judge is not None else "local"
+                else getattr(judge, "provider_name", "openai")
+                if judge is not None
+                else "local"
             ),
             model=judgment.model or "none",
             payload_hash=_payload_hash(evidence),

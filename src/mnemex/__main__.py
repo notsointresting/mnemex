@@ -112,6 +112,15 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Print the exact sanitized evidence payload eligible for a remote judge",
     )
+    check_parser.add_argument(
+        "--replay",
+        default=None,
+        metavar="FILE",
+        help=(
+            "Replay a recorded semantic verdict from FILE instead of calling a "
+            "provider; the result is labeled provider: replay"
+        ),
+    )
 
     reconcile_parser = sub.add_parser("reconcile", help="Reconcile a stale decision")
     reconcile_parser.add_argument("memory_id")
@@ -175,6 +184,7 @@ def main(argv: list[str] | None = None) -> int:
             args.max_evidence_tokens,
             args.enforce_constraints,
             show_payload=args.show_payload,
+            replay=args.replay,
         )
     elif args.command == "reconcile":
         return _reconcile(args.db, args.memory_id, args.changed_symbol, args.diff)
@@ -453,10 +463,11 @@ def _check(
     enforce_constraints: bool,
     *,
     show_payload: bool = False,
+    replay: str | None = None,
 ) -> int:
     from mnemex.config import MnemexConfig
     from mnemex.decision_guard import check_proposed_change
-    from mnemex.judge import create_semantic_judge
+    from mnemex.judge import ReplayJudge, create_semantic_judge
     from mnemex.storage import Storage
 
     config = MnemexConfig.from_env()
@@ -464,7 +475,11 @@ def _check(
         max(max_evidence_tokens, 0), config.max_evidence_tokens
     )
     with Storage(db_path) as storage:
-        judge = create_semantic_judge(config)
+        judge = (
+            ReplayJudge.from_file(replay)
+            if replay is not None
+            else create_semantic_judge(config)
+        )
         result = check_proposed_change(
             storage,
             path,

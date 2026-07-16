@@ -17,6 +17,7 @@ from mnemex.config import MnemexConfig
 
 __all__ = [
     "OpenAIResponsesJudge",
+    "ReplayJudge",
     "SemanticJudge",
     "SemanticJudgment",
     "Verdict",
@@ -135,6 +136,50 @@ class OpenAIResponsesJudge:
         except Exception:
             return None
         return self._client
+
+
+class ReplayJudge:
+    """Replays a previously recorded semantic verdict for demos and rehearsal.
+
+    The verdict, confidence, and explanation come from a recorded file; the
+    cited decision ids are resolved from the live evidence payload because
+    memory ids are unique per database. Guard results produced this way are
+    labeled ``provider: replay`` and must never be presented as a live call.
+    """
+
+    provider_name = "replay"
+
+    def __init__(self, verdict: Verdict, confidence: float, explanation: str) -> None:
+        self._verdict = verdict
+        self._confidence = confidence
+        self._explanation = explanation
+
+    @classmethod
+    def from_file(cls, path: str) -> "ReplayJudge":
+        with open(path, encoding="utf-8") as handle:
+            data = json.load(handle)
+        return cls(
+            verdict=Verdict(data["verdict"]),
+            confidence=float(data["confidence"]),
+            explanation=str(data["explanation"]),
+        )
+
+    def evaluate(self, evidence: str) -> SemanticJudgment:
+        try:
+            decisions = json.loads(evidence).get("decisions", [])
+            evidence_ids = tuple(
+                str(item["memory_id"]) for item in decisions if item.get("memory_id")
+            )
+        except (TypeError, ValueError, KeyError):
+            evidence_ids = ()
+        return SemanticJudgment(
+            verdict=self._verdict,
+            confidence=self._confidence,
+            explanation=self._explanation,
+            evidence_ids=evidence_ids,
+            model="replay",
+            payload_tokens=len(evidence.split()),
+        )
 
 
 def create_semantic_judge(

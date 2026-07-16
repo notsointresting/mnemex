@@ -1,0 +1,5 @@
+{
+  "verdict": "contradiction",
+  "confidence": 0.96,
+  "explanation": "The retry loop writes to the ledger up to three times and the idempotency-key check has been removed, so a transient error after a successful write double-charges the order. This contradicts the anchored decision that payment writes must be idempotent."
+}

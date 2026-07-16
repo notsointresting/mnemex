@@ -140,3 +140,41 @@ def test_semantic_judgment_is_immutable() -> None:
 
     with pytest.raises(FrozenInstanceError):
         judgment.verdict = Verdict.UNCERTAIN  # type: ignore[misc]
+
+
+def test_replay_judge_cites_payload_decisions_and_labels_provider(tmp_path) -> None:
+    import json as _json
+
+    from mnemex.judge import ReplayJudge, Verdict
+
+    recorded = tmp_path / "replay.json"
+    recorded.write_text(
+        _json.dumps(
+            {
+                "verdict": "contradiction",
+                "confidence": 0.96,
+                "explanation": "recorded verdict",
+            }
+        ),
+        encoding="utf-8",
+    )
+    judge = ReplayJudge.from_file(str(recorded))
+    payload = _json.dumps(
+        {
+            "path": "src/payments.py",
+            "patch_summary": "drop idempotency",
+            "decisions": [{"memory_id": "mem-1"}, {"memory_id": "mem-2"}],
+        }
+    )
+
+    judgment = judge.evaluate(payload)
+
+    assert judge.provider_name == "replay"
+    assert judgment.verdict is Verdict.CONTRADICTION
+    assert judgment.confidence == 0.96
+    assert judgment.evidence_ids == ("mem-1", "mem-2")
+    assert judgment.model == "replay"
+    assert judgment.blocks_change is True
+
+    garbage = judge.evaluate("not json")
+    assert garbage.evidence_ids == ()
