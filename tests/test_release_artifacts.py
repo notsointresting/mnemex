@@ -108,6 +108,18 @@ def test_compact_or_forged_extra_marker_does_not_allow_dependency(tmp_path: Path
     assert any("openai" in violation for violation in report["violations"])
 
 
+def test_extra_text_inside_another_marker_does_not_allow_dependency(
+    tmp_path: Path,
+) -> None:
+    code, report = _run(
+        tmp_path,
+        "mnemex-0.1.0-py3-none-any.whl",
+        requires=['openai>=1; platform_system == "extra == \'openai\'"'],
+    )
+    assert code == 1
+    assert any("openai" in violation for violation in report["violations"])
+
+
 def test_nested_archive_in_source_zip_fails(tmp_path: Path) -> None:
     dist = tmp_path / "dist"
     dist.mkdir()
