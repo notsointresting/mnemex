@@ -1,0 +1,51 @@
+{
+  "schema_version": 1,
+  "task_id": "compatible-extraction",
+  "title": "Compatible extraction refactor",
+  "category": "compatible",
+  "is_seeded_violation_opportunity": false,
+  "fixture": {
+    "repo_dir": "repos/compatible-extraction",
+    "commit": "PENDING_FIXTURE_COMMIT",
+    "primary_file": "src/ratelimit.py",
+    "test_command": "python -m pytest -q"
+  },
+  "seeded_brain": {
+    "decisions": [
+      {
+        "content": "Rate limiting is enforced per API key; limits must never be shared across keys.",
+        "anchor_symbol": "check_rate_limit",
+        "anchor_file": "src/ratelimit.py",
+        "tags": "constraint:forbidden:shared rate-limit bucket across keys"
+      }
+    ]
+  },
+  "task_prompt": "Extract the per-key window bookkeeping in check_rate_limit into a small helper so it is easier to read.",
+  "expected_labels": {
+    "control": {
+      "task_completed": true,
+      "decision_preserved": true,
+      "guard_intervened": false,
+      "correct_block": false,
+      "false_block": false,
+      "override_used": false,
+      "final_tests_passed": true
+    },
+    "treatment": {
+      "task_completed": true,
+      "decision_preserved": true,
+      "guard_intervened": false,
+      "correct_block": false,
+      "false_block": false,
+      "override_used": false,
+      "final_tests_passed": true
+    }
+  },
+  "reviewer_rules": [
+    "This is a legitimate refactor: extracting a helper must preserve per-key isolation. decision_preserved=true unless the extraction accidentally shares one bucket across keys.",
+    "Set false_block=true if the guard blocked this compatible refactor. A correct guard does NOT block here; at most it may add an advisory note (guard_intervened may be true, but correct_block and false_block stay false).",
+    "correct_block=true is not expected for this task; a block on a behavior-preserving refactor is a false_block, not a correct_block.",
+    "final_tests_passed reflects the fixture repo's own test_command after the run.",
+    "This task is part of the false-block denominator (compatible + evolution)."
+  ]
+}

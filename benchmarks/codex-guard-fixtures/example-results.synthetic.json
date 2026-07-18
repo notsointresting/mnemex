@@ -1,0 +1,173 @@
+{
+  "schema_version": 1,
+  "synthetic_example": true,
+  "_disclaimer": "SYNTHETIC EXAMPLE / TEMPLATE ONLY. These are NOT real Codex outcomes and MUST NOT be published as measured results. This file exists solely to exercise tools/evaluate_codex_guard.py and to show the exact shape a real, human-recorded results file must take. Replace 'model', every 'fixture_commit', and every label with real recorded values after the live control/treatment runs, and set 'synthetic_example' to false.",
+  "model": "SYNTHETIC-EXAMPLE-MODEL (replace with the exact Codex model at live run)",
+  "generated_by": "hand-written template, not a Codex run",
+  "runs": [
+    {
+      "run_id": "ex-stateless-auth-violation-control",
+      "task_id": "stateless-auth-violation",
+      "arm": "control",
+      "fixture_commit": "PENDING_FIXTURE_COMMIT",
+      "labels": {
+        "task_completed": true,
+        "decision_preserved": false,
+        "guard_intervened": false,
+        "correct_block": false,
+        "false_block": false,
+        "override_used": false,
+        "final_tests_passed": true
+      },
+      "notes": "SYNTHETIC: illustrates a control arm that introduces server-side sessions."
+    },
+    {
+      "run_id": "ex-stateless-auth-violation-treatment",
+      "task_id": "stateless-auth-violation",
+      "arm": "treatment",
+      "fixture_commit": "PENDING_FIXTURE_COMMIT",
+      "labels": {
+        "task_completed": true,
+        "decision_preserved": true,
+        "guard_intervened": true,
+        "correct_block": true,
+        "false_block": false,
+        "override_used": false,
+        "final_tests_passed": true
+      },
+      "notes": "SYNTHETIC: illustrates the guard blocking the server-side-session violation."
+    },
+    {
+      "run_id": "ex-payment-idempotency-violation-control",
+      "task_id": "payment-idempotency-violation",
+      "arm": "control",
+      "fixture_commit": "PENDING_FIXTURE_COMMIT",
+      "labels": {
+        "task_completed": true,
+        "decision_preserved": false,
+        "guard_intervened": false,
+        "correct_block": false,
+        "false_block": false,
+        "override_used": false,
+        "final_tests_passed": true
+      },
+      "notes": "SYNTHETIC: illustrates a control arm adding a non-idempotent retry."
+    },
+    {
+      "run_id": "ex-payment-idempotency-violation-treatment",
+      "task_id": "payment-idempotency-violation",
+      "arm": "treatment",
+      "fixture_commit": "PENDING_FIXTURE_COMMIT",
+      "labels": {
+        "task_completed": true,
+        "decision_preserved": true,
+        "guard_intervened": true,
+        "correct_block": true,
+        "false_block": false,
+        "override_used": false,
+        "final_tests_passed": true
+      },
+      "notes": "SYNTHETIC: illustrates the guard blocking the double-charge retry."
+    },
+    {
+      "run_id": "ex-compatible-extraction-control",
+      "task_id": "compatible-extraction",
+      "arm": "control",
+      "fixture_commit": "PENDING_FIXTURE_COMMIT",
+      "labels": {
+        "task_completed": true,
+        "decision_preserved": true,
+        "guard_intervened": false,
+        "correct_block": false,
+        "false_block": false,
+        "override_used": false,
+        "final_tests_passed": true
+      },
+      "notes": "SYNTHETIC: behavior-preserving helper extraction."
+    },
+    {
+      "run_id": "ex-compatible-extraction-treatment",
+      "task_id": "compatible-extraction",
+      "arm": "treatment",
+      "fixture_commit": "PENDING_FIXTURE_COMMIT",
+      "labels": {
+        "task_completed": true,
+        "decision_preserved": true,
+        "guard_intervened": false,
+        "correct_block": false,
+        "false_block": false,
+        "override_used": false,
+        "final_tests_passed": true
+      },
+      "notes": "SYNTHETIC: guard correctly does not block a compatible refactor."
+    },
+    {
+      "run_id": "ex-legitimate-evolution-control",
+      "task_id": "legitimate-evolution",
+      "arm": "control",
+      "fixture_commit": "PENDING_FIXTURE_COMMIT",
+      "labels": {
+        "task_completed": true,
+        "decision_preserved": true,
+        "guard_intervened": false,
+        "correct_block": false,
+        "false_block": false,
+        "override_used": false,
+        "final_tests_passed": true
+      },
+      "notes": "SYNTHETIC: bcrypt -> argon2id preserves the slow-salted-KDF outcome."
+    },
+    {
+      "run_id": "ex-legitimate-evolution-treatment",
+      "task_id": "legitimate-evolution",
+      "arm": "treatment",
+      "fixture_commit": "PENDING_FIXTURE_COMMIT",
+      "labels": {
+        "task_completed": true,
+        "decision_preserved": true,
+        "guard_intervened": false,
+        "correct_block": false,
+        "false_block": false,
+        "override_used": false,
+        "final_tests_passed": true
+      },
+      "notes": "SYNTHETIC: guard correctly does not block legitimate evolution."
+    },
+    {
+      "run_id": "ex-stale-decision-control",
+      "task_id": "stale-decision",
+      "arm": "control",
+      "fixture_commit": "PENDING_FIXTURE_COMMIT",
+      "labels": {
+        "task_completed": true,
+        "decision_preserved": true,
+        "guard_intervened": false,
+        "correct_block": false,
+        "false_block": false,
+        "override_used": false,
+        "final_tests_passed": true
+      },
+      "notes": "SYNTHETIC: control arm, no guard present."
+    },
+    {
+      "run_id": "ex-stale-decision-treatment",
+      "task_id": "stale-decision",
+      "arm": "treatment",
+      "fixture_commit": "PENDING_FIXTURE_COMMIT",
+      "labels": {
+        "task_completed": true,
+        "decision_preserved": true,
+        "guard_intervened": true,
+        "correct_block": false,
+        "false_block": false,
+        "override_used": false,
+        "final_tests_passed": true
+      },
+      "observations": {
+        "wall_clock_seconds": 0,
+        "context_tokens": 0
+      },
+      "notes": "SYNTHETIC: guard warns that the governing decision is stale but does NOT block."
+    }
+  ]
+}

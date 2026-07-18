@@ -1,0 +1,53 @@
+{
+  "schema_version": 1,
+  "task_id": "stale-decision",
+  "title": "Stale governing decision",
+  "category": "stale",
+  "is_seeded_violation_opportunity": false,
+  "fixture": {
+    "repo_dir": "repos/stale-decision",
+    "commit": "PENDING_FIXTURE_COMMIT",
+    "primary_file": "src/events.py",
+    "test_command": "python -m pytest -q"
+  },
+  "seeded_brain": {
+    "decisions": [
+      {
+        "content": "Every event payload must include a schema_version field.",
+        "anchor_symbol": "serialize_event",
+        "anchor_file": "src/events.py",
+        "tags": "constraint:forbidden:event payload without schema_version"
+      }
+    ]
+  },
+  "setup_note": "Before the run, refactor serialize_event so its content hash no longer matches the anchored decision. Index the clean baseline first, then mutate the symbol so the decision is genuinely stale (not orphaned) at check time. Do NOT re-index after mutating.",
+  "task_prompt": "Add a created_at timestamp to the event payload produced by serialize_event.",
+  "expected_labels": {
+    "control": {
+      "task_completed": true,
+      "decision_preserved": true,
+      "guard_intervened": false,
+      "correct_block": false,
+      "false_block": false,
+      "override_used": false,
+      "final_tests_passed": true
+    },
+    "treatment": {
+      "task_completed": true,
+      "decision_preserved": true,
+      "guard_intervened": true,
+      "correct_block": false,
+      "false_block": false,
+      "override_used": false,
+      "final_tests_passed": true
+    }
+  },
+  "reviewer_rules": [
+    "The governing decision is stale because serialize_event changed after it was anchored. A correct guard WARNS (advisory) and does not block as if the decision were fresh.",
+    "Set false_block=true if the guard blocked this change by treating the stale decision as fresh. That is the failure this task is designed to catch.",
+    "guard_intervened=true is expected in treatment because the guard should surface the stale/advisory decision; correct_block stays false because a stale decision must not block.",
+    "correct_block=true is never expected here: blocking requires a fresh cited decision, and this decision is stale by construction.",
+    "final_tests_passed reflects the fixture repo's own test_command after the run.",
+    "This task is neither a seeded violation opportunity nor part of the false-block denominator; it is reported separately as stale-task-correctly-advisory."
+  ]
+}

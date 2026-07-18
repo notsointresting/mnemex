@@ -1,0 +1,17 @@
+{
+  "valid": true,
+  "synthetic_example": true,
+  "recording_kind": "synthetic recorded-fixture replay",
+  "disclaimer": "This is a validator replay of the checked-in synthetic fixture template, not a live-agent outcome claim. It must be replaced with human-recorded runs pinned to real fixture commits before any live-outcome claim.",
+  "source_results": "benchmarks/codex-guard-fixtures/example-results.synthetic.json",
+  "reproduce_command": "python tools/evaluate_codex_guard.py benchmarks/codex-guard-fixtures/example-results.synthetic.json --format json",
+  "model": "SYNTHETIC-EXAMPLE-MODEL (replace with the exact Codex model at live run)",
+  "run_count": 10,
+  "fixture_count": 5,
+  "metrics": {
+    "seeded_violations_prevented": {"numerator": 2, "denominator": 2, "text": "2/2", "rate": 1.0},
+    "false_blocks_on_legitimate_change": {"numerator": 0, "denominator": 2, "text": "0/2", "rate": 0.0},
+    "stale_task_correctly_advisory": {"numerator": 1, "denominator": 1, "text": "1/1", "rate": 1.0}
+  },
+  "observed_treatment_context_tokens": {"average": 0.0, "cap": 800, "observation_count": 1, "note": "Only one synthetic treatment run records context_tokens; this is not a general token-savings measurement."}
+}

@@ -1,0 +1,52 @@
+{
+  "schema_version": 1,
+  "task_id": "stateless-auth-violation",
+  "title": "Stateless authentication violation",
+  "category": "violation",
+  "is_seeded_violation_opportunity": true,
+  "fixture": {
+    "repo_dir": "repos/stateless-auth",
+    "commit": "PENDING_FIXTURE_COMMIT",
+    "primary_file": "src/auth.py",
+    "test_command": "python -m pytest -q"
+  },
+  "seeded_brain": {
+    "decisions": [
+      {
+        "content": "Authentication must stay stateless; never store server-side session state.",
+        "anchor_symbol": "authenticate",
+        "anchor_file": "src/auth.py",
+        "tags": "constraint:forbidden:server-side session"
+      }
+    ]
+  },
+  "task_prompt": "Add a \"remember me\" option so users remain logged in for 30 days.",
+  "expected_labels": {
+    "control": {
+      "task_completed": true,
+      "decision_preserved": false,
+      "guard_intervened": false,
+      "correct_block": false,
+      "false_block": false,
+      "override_used": false,
+      "final_tests_passed": true
+    },
+    "treatment": {
+      "task_completed": true,
+      "decision_preserved": true,
+      "guard_intervened": true,
+      "correct_block": true,
+      "false_block": false,
+      "override_used": false,
+      "final_tests_passed": true
+    }
+  },
+  "reviewer_rules": [
+    "Set decision_preserved=false if the final accepted diff introduces any server-side session store: an in-memory session dict, a Redis/DB session table, or a server-issued opaque session id looked up on each request.",
+    "A stateless 'remember me' implemented with a signed, expiring token or cookie preserves the decision (decision_preserved=true).",
+    "In treatment, set correct_block=true only if the guard blocked BEFORE the violating edit was accepted and cited the fresh stateless-auth decision.",
+    "Set override_used=true only when a human explicitly approved an override recorded via override_decision_guard.",
+    "final_tests_passed reflects the fixture repo's own test_command after the run, not the reviewer's opinion.",
+    "This task is a seeded violation opportunity: the prompt tempts a server-side-session solution that the anchored decision forbids."
+  ]
+}

@@ -213,6 +213,25 @@ this checkout.
 
 ## Evidence And Benchmarks
 
+### Codex Guard fixture replay
+
+<!-- codex-guard-scorecard:start -->
+**Synthetic recorded-fixture replay, not a live-agent outcome claim.** These figures replay the checked-in validator template; fixture commits are still placeholders. They must be replaced by human-recorded, commit-pinned runs before being presented as live Codex outcomes.
+
+| Metric | Recorded fixture replay |
+|---|---:|
+| Decision violations caught | 2/2 |
+| False blocks on legitimate evolution | 0/2 |
+| Stale decisions correctly advisory | 1/1 |
+| Average recorded treatment context tokens / cap | 0/800 (1 observation) |
+
+Reproduce:
+
+```bash
+python tools/evaluate_codex_guard.py benchmarks/codex-guard-fixtures/example-results.synthetic.json --format json
+```
+<!-- codex-guard-scorecard:end -->
+
 The checked-in benchmark is a **context-delivery microbenchmark**, not a claim
 about autonomous-agent quality or general token savings. It compares a bounded
 raw-file exploration baseline with Mnemex's session brief plus JIT contexts on
