@@ -1,14 +1,12 @@
 from __future__ import annotations
 
-import os
 import sqlite3
 from collections.abc import Collection
 from dataclasses import dataclass, replace
 from pathlib import Path
 from types import TracebackType
 
-import sqlite_vec
-
+from mnemex import vector_backend
 from mnemex.security import RedactionLog, sanitize
 
 _VALID_SCOPES = frozenset(
@@ -311,8 +309,10 @@ class Storage:
     def __init__(self, path: str | Path = ":memory:") -> None:
         self._connection: sqlite3.Connection | None = sqlite3.connect(str(path))
         self._vec_available = False
+        self._vec_status = "package-not-installed"
+        self._vec_module = None
         try:
-            self._vec_available = self._load_sqlite_vec()
+            self._vec_available, self._vec_status = self._load_sqlite_vec()
             self._initialize()
         except BaseException:
             self.close()
@@ -326,6 +326,27 @@ class Storage:
         BM25/FTS5-only ("no-ML") mode. Retrieval degrades gracefully.
         """
         return self._vec_available
+
+    @property
+    def vec_serialize(self):
+        """``sqlite_vec.serialize_float32`` when vectors loaded, else ``None``.
+
+        Retrieval reaches sqlite-vec only through this, so no other module
+        needs to import the native package.
+        """
+        module = self._vec_module
+        return None if module is None else module.serialize_float32
+
+    @property
+    def vec_status(self) -> str:
+        """Stable, non-secret reason for the current vector availability.
+
+        Exactly one of ``available``, ``disabled-by-environment``,
+        ``package-not-installed``, ``extension-loading-unsupported``, or
+        ``extension-load-failed``. It never contains an exception message or a
+        local library path, so it is safe to surface in doctor output.
+        """
+        return self._vec_status
 
     @property
     def connection(self) -> sqlite3.Connection:
@@ -867,40 +888,47 @@ class Storage:
             )
         return cursor.rowcount > 0
 
-    def _load_sqlite_vec(self) -> bool:
+    def _load_sqlite_vec(self) -> tuple[bool, str]:
         """Load the sqlite-vec extension if the platform supports it.
 
-        Returns ``True`` when the vector backend is available. When the stdlib
-        ``sqlite3`` was built without loadable-extension support (some macOS
-        Python builds) or the extension otherwise fails to load, returns
-        ``False`` and mnemex runs in BM25/FTS5-only ("no-ML") mode. FTS5 is
-        compiled into SQLite and needs no extension, so keyword retrieval
-        always works. Set ``MNEMEX_NO_VEC=1`` to force no-ML mode.
+        Returns ``(available, status)`` where ``status`` is one of the stable,
+        non-secret strings ``available``, ``disabled-by-environment``,
+        ``package-not-installed``, ``extension-loading-unsupported``, or
+        ``extension-load-failed``. When the stdlib ``sqlite3`` was built without
+        loadable-extension support (some macOS Python builds) or the extension
+        otherwise fails to load, ``available`` is ``False`` and mnemex runs in
+        BM25/FTS5-only ("no-ML") mode. FTS5 is compiled into SQLite and needs no
+        extension, so keyword retrieval always works. Set ``MNEMEX_NO_VEC=1`` to
+        force no-ML mode; in that case the ``sqlite_vec`` import is never even
+        attempted (see :mod:`mnemex.vector_backend`). No exception text or
+        library path is ever returned.
         """
-        if os.environ.get("MNEMEX_NO_VEC"):
-            return False
+        sqlite_vec, status = vector_backend.load_module()
+        if sqlite_vec is None:
+            return False, status
 
         connection = self.connection
         toggle_extension_loading = getattr(
             connection, "enable_load_extension", None
         )
         if toggle_extension_loading is None:
-            return False
+            return False, "extension-loading-unsupported"
 
         try:
             toggle_extension_loading(True)
         except (sqlite3.OperationalError, sqlite3.NotSupportedError, AttributeError):
-            return False
+            return False, "extension-loading-unsupported"
         try:
             sqlite_vec.load(connection)
         except Exception:
-            return False
+            return False, "extension-load-failed"
         finally:
             try:
                 toggle_extension_loading(False)
             except Exception:
                 pass
-        return True
+        self._vec_module = sqlite_vec
+        return True, "available"
 
     def _initialize(self) -> None:
         row = self.connection.execute("PRAGMA user_version").fetchone()

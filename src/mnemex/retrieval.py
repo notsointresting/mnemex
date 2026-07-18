@@ -14,8 +14,9 @@ import re
 from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass
 
-import sqlite_vec
-
+# The optional sqlite-vec accelerator is reached only through
+# ``storage.vec_serialize`` (see mnemex.vector_backend); this module never
+# imports the native package, keeping core mode import-free of it.
 from mnemex.storage import Memory, Storage
 
 __all__ = [
@@ -213,7 +214,7 @@ def ensure_embeddings(
             )
             storage.connection.execute(
                 "INSERT INTO memories_vec(rowid, embedding) VALUES (?, ?)",
-                (rowid, sqlite_vec.serialize_float32(embedding)),
+                (rowid, storage.vec_serialize(embedding)),
             )
             inserted += 1
     return inserted
@@ -313,7 +314,7 @@ def vector_candidates(
         WHERE embedding MATCH ? AND k = ? AND rowid IN ({rowid_ph})
         ORDER BY distance
         """,
-        (sqlite_vec.serialize_float32(query), vec_total, *allowed_rowids),
+        (storage.vec_serialize(query), vec_total, *allowed_rowids),
     ).fetchall()
 
     # sqlite-vec (0.1.9) permits only a single 'ORDER BY distance' clause on a

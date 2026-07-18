@@ -43,7 +43,6 @@ classifiers = [
 ]
 dependencies = [
     "fastmcp==3.4.4",
-    "sqlite-vec>=0.1.9,<0.2",
 ]
 
 [project.urls]
@@ -60,6 +59,12 @@ mnemex = "mnemex.__main__:main"
 dev = [
     "pytest==9.1.1",
     "ruff==0.15.21",
+]
+# Optional native vector accelerator. The mnemex core never requires or loads
+# the sqlite-vec extension; installing this extra upgrades retrieval to hybrid
+# BM25 + vector search using the same single SQLite brain.
+vector = [
+    "sqlite-vec>=0.1.9,<0.2",
 ]
 openai = [
     "openai>=1.0.0",

@@ -3,7 +3,13 @@ from dataclasses import FrozenInstanceError
 from pathlib import Path
 
 import pytest
-import sqlite_vec
+
+import mnemex.storage as storage_module
+
+try:
+    import sqlite_vec
+except (ImportError, OSError):
+    sqlite_vec = None
 
 from mnemex.storage import Memory, Node, Storage
 
@@ -285,3 +291,188 @@ def test_deleting_node_preserves_memory_anchor_for_orphan_detection() -> None:
         assert storage.get_memory(memory.id) == memory
         assert storage.get_memory(memory.id).anchor_node_id == node.id
         assert storage.get_memory(memory.id).anchor_hash == node.content_hash
+
+
+
+# --------------------------------------------------------------------------- #
+# Optional sqlite-vec accelerator: stable status + graceful degradation
+# --------------------------------------------------------------------------- #
+
+
+def test_vec_status_disabled_by_environment(monkeypatch) -> None:
+    monkeypatch.setenv("MNEMEX_NO_VEC", "1")
+    with Storage() as storage:
+        assert storage.vec_available is False
+        assert storage.vec_status == "disabled-by-environment"
+
+
+def test_vec_status_package_not_installed_still_runs_bm25(monkeypatch) -> None:
+    # Simulate an absent package without uninstalling it: the lazy backend
+    # loader is what _load_sqlite_vec consults.
+    monkeypatch.setattr(
+        storage_module.vector_backend,
+        "load_module",
+        lambda: (None, "package-not-installed"),
+    )
+    with Storage() as storage:
+        assert storage.vec_available is False
+        assert storage.vec_status == "package-not-installed"
+        # Schema + FTS5 initialize normally and the brain is fully usable.
+        assert "memories_vec" not in _table_names(storage)
+        storage.insert_memory(make_memory(anchor_node_id=None, anchor_hash=None))
+        assert fts_memory_ids(storage, "stateless") == ["memory-1"]
+
+
+def test_vec_status_import_time_oserror_reports_load_failed(monkeypatch) -> None:
+    # An installed package whose native payload raised OSError at import time
+    # is recorded as extension-load-failed, distinct from not-installed.
+    monkeypatch.setattr(
+        storage_module.vector_backend,
+        "load_module",
+        lambda: (None, "extension-load-failed"),
+    )
+    with Storage() as storage:
+        assert storage.vec_available is False
+        assert storage.vec_status == "extension-load-failed"
+
+
+def test_vec_status_extension_loading_unsupported() -> None:
+    # Some Python builds ship sqlite3 without loadable-extension support.
+    storage = Storage()
+    real = storage._connection
+    try:
+        storage._connection = object()  # no enable_load_extension attribute
+        available, status = storage._load_sqlite_vec()
+        assert available is False
+        assert status == "extension-loading-unsupported"
+    finally:
+        storage._connection = real
+        storage.close()
+
+
+def test_vec_status_extension_load_failed_on_load_call(monkeypatch) -> None:
+    class _FailingVec:
+        @staticmethod
+        def load(connection: object) -> None:
+            raise OSError("simulated native load failure")
+
+    storage = Storage()
+    try:
+        if getattr(storage._connection, "enable_load_extension", None) is None:
+            pytest.skip("platform sqlite3 cannot load extensions")
+        monkeypatch.setattr(
+            storage_module.vector_backend,
+            "load_module",
+            lambda: (_FailingVec, "available"),
+        )
+        available, status = storage._load_sqlite_vec()
+        assert available is False
+        assert status == "extension-load-failed"
+    finally:
+        storage.close()
+
+
+def test_vec_status_never_leaks_exception_or_path(monkeypatch) -> None:
+    class _FailingVec:
+        @staticmethod
+        def load(connection: object) -> None:
+            raise OSError(r"C:\secret\path\vec0.dll not permitted")
+
+    storage = Storage()
+    try:
+        if getattr(storage._connection, "enable_load_extension", None) is None:
+            pytest.skip("platform sqlite3 cannot load extensions")
+        monkeypatch.setattr(
+            storage_module.vector_backend,
+            "load_module",
+            lambda: (_FailingVec, "available"),
+        )
+        _available, status = storage._load_sqlite_vec()
+        assert status in {
+            "available",
+            "disabled-by-environment",
+            "package-not-installed",
+            "extension-loading-unsupported",
+            "extension-load-failed",
+        }
+        assert "secret" not in status and ".dll" not in status
+    finally:
+        storage.close()
+
+
+@_needs_vec
+def test_vec_status_available_when_extension_loads() -> None:
+    with Storage() as storage:
+        assert storage.vec_available is True
+        assert storage.vec_status == "available"
+
+
+def test_core_mode_creates_recalls_and_reopens_one_brain(
+    tmp_path: Path, monkeypatch
+) -> None:
+    # A single SQLite brain must create, recall, and reopen with no vector
+    # backend present.
+    from mnemex.retrieval import recall
+
+    monkeypatch.setenv("MNEMEX_NO_VEC", "1")
+    database = tmp_path / "core.sqlite3"
+    with Storage(database) as storage:
+        assert storage.vec_available is False
+        storage.insert_memory(make_memory(anchor_node_id=None, anchor_hash=None))
+        result = recall(storage, "stateless", scopes=("project-shared",))
+        assert result.mode == "bm25-only"
+        assert [sm.memory.id for sm in result.included] == ["memory-1"]
+
+    with Storage(database) as reopened:
+        assert reopened.vec_available is False
+        assert reopened.get_memory("memory-1") is not None
+
+
+@_needs_vec
+def test_existing_memories_vec_reopens_without_mutation(
+    tmp_path: Path, monkeypatch
+) -> None:
+    database = tmp_path / "hybrid.sqlite3"
+    with Storage(database) as storage:
+        assert storage.vec_available is True
+        storage.insert_memory(make_memory(anchor_node_id=None, anchor_hash=None))
+        rowid = storage.connection.execute(
+            "SELECT rowid FROM memories WHERE id = ?", ("memory-1",)
+        ).fetchone()[0]
+        with storage.connection:
+            storage.connection.execute(
+                "INSERT INTO memories_vec(rowid, embedding) VALUES (?, ?)",
+                (rowid, sqlite_vec.serialize_float32([0.0] * 384)),
+            )
+        before = storage.connection.execute(
+            "SELECT count(*) FROM memories_vec"
+        ).fetchone()[0]
+    assert before == 1
+
+    # Reopen with vector loading disabled: opening must not crash and must not
+    # drop the vec table. (A vec0 table cannot be *queried* without the loaded
+    # extension, so we only assert the definition survives here.)
+    monkeypatch.setenv("MNEMEX_NO_VEC", "1")
+    with Storage(database) as reopened:
+        assert reopened.vec_available is False
+        assert reopened.vec_status == "disabled-by-environment"
+        assert "memories_vec" in _table_names(reopened)
+
+    # Re-enable vectors: the previously stored embedding is intact, proving the
+    # no-vec open neither dropped nor mutated the vector data.
+    monkeypatch.delenv("MNEMEX_NO_VEC", raising=False)
+    with Storage(database) as revived:
+        assert revived.vec_available is True
+        after = revived.connection.execute(
+            "SELECT count(*) FROM memories_vec"
+        ).fetchone()[0]
+        assert after == before
+
+
+def _table_names(storage: Storage) -> set[str]:
+    return {
+        row[0]
+        for row in storage.connection.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table'"
+        ).fetchall()
+    }

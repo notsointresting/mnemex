@@ -483,3 +483,40 @@ def _rowid(storage: Storage, memory_id: str) -> int:
     return storage.connection.execute(
         "SELECT rowid FROM memories WHERE id = ?", (memory_id,)
     ).fetchone()[0]
+
+
+
+# --------------------------------------------------------------------------- #
+# No-vector degradation: documented empty/zero results, bm25-only recall
+# --------------------------------------------------------------------------- #
+
+
+def test_vector_functions_return_no_vector_values_when_disabled(
+    monkeypatch,
+) -> None:
+    # Force no-ML mode deterministically without uninstalling sqlite-vec.
+    monkeypatch.setenv("MNEMEX_NO_VEC", "1")
+    with Storage() as storage:
+        assert storage.vec_available is False
+        add(storage, "m", "authentication cookies session")
+
+        # ensure_embeddings is a no-op that inserts nothing.
+        assert ensure_embeddings(
+            storage, synthetic_embedder, scopes=("project-shared",)
+        ) == 0
+
+        # vector_candidates yields an empty result set.
+        assert vector_candidates(
+            storage,
+            synthetic_embedder("authentication"),
+            scopes=("project-shared",),
+            limit=10,
+        ) == []
+
+        # recall still works but reports bm25-only even with an embedder.
+        result = recall(
+            storage, "authentication", embedder=synthetic_embedder
+        )
+        assert result.mode == "bm25-only"
+        assert [sm.memory.id for sm in result.included] == ["m"]
+        assert all(sm.signals == ("bm25",) for sm in result.included)
