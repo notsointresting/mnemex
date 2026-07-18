@@ -432,6 +432,8 @@ def _demo(db_path: str, *, semantic: bool = False, json_output: bool = False) ->
             _print_json(payload)
         else:
             print(_render_demo(payload))
+            print()
+            print(_render_why(storage, why_result))
     return 0
 
 
@@ -687,7 +689,14 @@ def _render_why(storage: object, result: object) -> str:
     if not decisions:
         return "\n".join(lines + ["No in-scope decisions found."])
 
+    # Prefer the ACTIVE decision as "current"; retrieval rank alone can put a
+    # superseded predecessor first (e.g. right after a supersede in the demo).
     current = decisions[0]
+    for candidate in decisions:
+        candidate_metadata = storage.get_decision_metadata(candidate.memory_id)
+        if candidate_metadata is not None and candidate_metadata.status == "active":
+            current = candidate
+            break
     metadata = storage.get_decision_metadata(current.memory_id)
     node = (
         storage.get_node(current.anchor_node_id)
