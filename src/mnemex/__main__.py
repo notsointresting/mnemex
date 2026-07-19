@@ -89,6 +89,28 @@ def main(argv: list[str] | None = None) -> int:
         help="Write the opt-in Mnemex decision-guard block to <root>/AGENTS.md",
     )
 
+    setup_parser = sub.add_parser(
+        "setup",
+        help="Configure an agent to use the mnemex MCP server "
+        "(codex, claude-code, cursor, vscode)",
+    )
+    setup_parser.add_argument(
+        "agent", help="Target agent: codex | claude-code | cursor | vscode"
+    )
+    setup_parser.add_argument(
+        "path", nargs="?", default=".", help="Project directory or a path inside it"
+    )
+    setup_parser.add_argument(
+        "--db",
+        default=None,
+        help="Path to SQLite database (default: <root>/.mnemex/mnemex.sqlite3)",
+    )
+    setup_parser.add_argument(
+        "--guard",
+        action="store_true",
+        help="Also write the Mnemex decision-guard block to <root>/AGENTS.md",
+    )
+
     doctor_parser = sub.add_parser("doctor", help="Check local database readiness")
     doctor_parser.add_argument("--db", default="mnemex.sqlite3", help="Path to SQLite database")
 
@@ -209,6 +231,8 @@ def main(argv: list[str] | None = None) -> int:
         return _init(
             args.path, args.db, args.codex_config, args.no_index, args.codex_guard
         )
+    elif args.command == "setup":
+        return _setup(args.agent, args.path, args.db, args.guard)
     elif args.command == "doctor":
         return _doctor(args.db)
     elif args.command == "demo":
@@ -383,6 +407,41 @@ def _init(
                 _print_json(result)
                 return 1
         _print_json(result)
+    return 0
+
+
+def _setup(agent: str, project_path: str, db_path: str | None, guard: bool) -> int:
+    """Write the mnemex MCP entry into one agent's project-local config."""
+    from mnemex.agent_setup import AGENTS, setup_agent
+
+    if agent not in AGENTS:
+        _print_json(
+            {
+                "agent": agent,
+                "status": "error",
+                "error": "unknown-agent",
+                "valid_agents": sorted(AGENTS),
+            }
+        )
+        return 1
+    root = _project_root(Path(project_path))
+    effective_db = (
+        Path(db_path) if db_path is not None else root / ".mnemex" / "mnemex.sqlite3"
+    )
+    if str(effective_db) != ":memory:":
+        effective_db.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        result = setup_agent(agent, root, str(effective_db), guard=guard)
+    except ValueError as exc:
+        _print_json({"agent": agent, "status": "error", "error": str(exc)})
+        return 1
+    except OSError:
+        _print_json(
+            {"agent": agent, "status": "error", "error": "config-write-failed"}
+        )
+        return 1
+    result["status"] = "ready"
+    _print_json(result)
     return 0
 
 

@@ -185,6 +185,31 @@ malformed provider output produces `unavailable` or `uncertain`; it never
 blocks an edit. Every remote payload is sanitized, capped, and summarized in
 the guard result.
 
+## Agent Setup
+
+One command wires the mnemex MCP server into a project-local agent config. It
+writes **only** the `mnemex` entry, leaves every other setting untouched, and
+is byte-identical on re-run:
+
+```bash
+mnemex setup cursor                 # or: claude-code | codex | vscode
+mnemex setup claude-code --guard    # also write the decision-guard block to AGENTS.md
+```
+
+| Agent | Config written (project-local) |
+|---|---|
+| `claude-code` | `.mcp.json` |
+| `cursor` | `.cursor/mcp.json` |
+| `vscode` | `.vscode/mcp.json` |
+| `codex` | `.codex/config.toml` |
+
+Each writes the stdio launch entry `python -m mnemex serve --db
+<root>/.mnemex/mnemex.sqlite3` and prints a JSON report of the exact path it
+changed. An existing config that is not valid JSON is reported as an error and
+left untouched rather than overwritten. Restart the agent afterward so it
+reloads the MCP config. To install the CLI in isolation from this checkout, use
+`pipx install .` (or `uvx --from . mnemex ...`).
+
 ## Codex MCP Setup
 
 Run the server with stdio:
