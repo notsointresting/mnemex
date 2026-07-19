@@ -9,7 +9,7 @@ build/
 *.whl
 
 # Virtual environments
-.venv/
+.venv*/
 venv/
 env/
 
@@ -38,3 +38,17 @@ Thumbs.db
 
 # Local hackathon recording and submission working notes
 scripts/
+HACKATHON_*.md
+MNEMEX_COMPETITIVE_CONVERGENCE_PLAN.md
+docs/final-sprint-baseline.md
+
+# Locally installed agent skills / tooling (not part of mnemex)
+.agents/
+.kilocode/
+.qwen/
+skills-lock.json
+
+
+# secrets (never commit API keys)
+.env
+.env.*

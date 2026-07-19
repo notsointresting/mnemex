@@ -83,6 +83,11 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="Explicit project Codex config.toml path for the MCP entry",
     )
+    init_parser.add_argument(
+        "--codex-guard",
+        action="store_true",
+        help="Write the opt-in Mnemex decision-guard block to <root>/AGENTS.md",
+    )
 
     doctor_parser = sub.add_parser("doctor", help="Check local database readiness")
     doctor_parser.add_argument("--db", default="mnemex.sqlite3", help="Path to SQLite database")
@@ -120,6 +125,39 @@ def main(argv: list[str] | None = None) -> int:
             "Replay a recorded semantic verdict from FILE instead of calling a "
             "provider; the result is labeled provider: replay"
         ),
+    )
+
+    check_diff_parser = sub.add_parser(
+        "check-diff",
+        help="Check a staged or file diff against fresh anchored decisions",
+    )
+    check_diff_source = check_diff_parser.add_mutually_exclusive_group(required=True)
+    check_diff_source.add_argument(
+        "--staged",
+        action="store_true",
+        help="Check the current staged diff (git diff --cached, no shell)",
+    )
+    check_diff_source.add_argument(
+        "--diff-file",
+        default=None,
+        metavar="FILE",
+        help="Check a unified diff read from FILE (no git subprocess)",
+    )
+    check_diff_parser.add_argument(
+        "--db", default="mnemex.sqlite3", help="Path to SQLite database"
+    )
+    check_diff_parser.add_argument("--scopes", default="project-shared")
+    check_diff_parser.add_argument("--max-evidence-tokens", type=int, default=None)
+    check_diff_parser.add_argument(
+        "--enforce-constraints",
+        action="store_true",
+        help="Block fresh violations of explicit deterministic constraints",
+    )
+    check_diff_parser.add_argument(
+        "--format",
+        choices=("json", "markdown"),
+        default="json",
+        help="Report format (default: json)",
     )
 
     reconcile_parser = sub.add_parser("reconcile", help="Reconcile a stale decision")
@@ -168,7 +206,9 @@ def main(argv: list[str] | None = None) -> int:
     elif args.command == "benchmark":
         return _benchmark(args.path, args.db)
     elif args.command == "init":
-        return _init(args.path, args.db, args.codex_config, args.no_index)
+        return _init(
+            args.path, args.db, args.codex_config, args.no_index, args.codex_guard
+        )
     elif args.command == "doctor":
         return _doctor(args.db)
     elif args.command == "demo":
@@ -185,6 +225,16 @@ def main(argv: list[str] | None = None) -> int:
             args.enforce_constraints,
             show_payload=args.show_payload,
             replay=args.replay,
+        )
+    elif args.command == "check-diff":
+        return _check_diff(
+            args.db,
+            staged=args.staged,
+            diff_file=args.diff_file,
+            scopes=args.scopes,
+            max_evidence_tokens=args.max_evidence_tokens,
+            enforce_constraints=args.enforce_constraints,
+            output_format=args.format,
         )
     elif args.command == "reconcile":
         return _reconcile(args.db, args.memory_id, args.changed_symbol, args.diff)
@@ -282,6 +332,7 @@ def _init(
     db_path: str | None = None,
     codex_config: str | None = None,
     no_index: bool = False,
+    codex_guard: bool = False,
 ) -> int:
     """Initialize a local project brain and index supported source files."""
     from mnemex.indexer import index_directory
@@ -318,33 +369,84 @@ def _init(
             result["codex_config_changed"] = install_codex_mcp(
                 codex_config, str(effective_db)
             )
+        if codex_guard:
+            from mnemex.codex_setup import install_codex_guard
+
+            agents_md_path = root / "AGENTS.md"
+            result["codex_guard"] = str(agents_md_path)
+            try:
+                result["codex_guard_changed"] = install_codex_guard(agents_md_path)
+            except OSError:
+                # Fail clearly without leaking a raw exception or partial write.
+                result["status"] = "error"
+                result["error"] = "codex-guard-write-failed"
+                _print_json(result)
+                return 1
         _print_json(result)
     return 0
 
 
 def _doctor(db_path: str) -> int:
-    """Report local-first readiness without initializing a remote provider."""
+    """Report local-first readiness without initializing a remote provider.
+
+    Missing vector acceleration is a supported downgrade, not a failure. A
+    missing FTS5 backend, a failing redaction probe, an inaccessible database,
+    or an MCP tool-registration failure are hard failures and return nonzero.
+    Doctor never initializes OpenAI, opens an HTTP listener, or makes a network
+    call.
+    """
     from mnemex.server import create_server
     from mnemex.storage import Storage
 
     if db_path != ":memory:" and not Path(db_path).exists():
         _print_json({"database": db_path, "status": "missing"})
         return 1
-    with Storage(db_path) as storage:
-        schema_version = storage.connection.execute("PRAGMA user_version").fetchone()[0]
+
+    try:
+        storage = Storage(db_path)
+    except Exception:
+        # Never surface a raw exception or path; report a stable status.
+        _print_json({"database": db_path, "status": "unreadable"})
+        return 1
+
+    healthy = False
+    try:
+        schema_version = storage.connection.execute(
+            "PRAGMA user_version"
+        ).fetchone()[0]
+        fts5_ready = _fts5_ready(storage)
+        redaction_probe_passed = _redaction_probe_passed()
+        try:
+            mcp_tools_registered = _mcp_tool_count(create_server)
+        except Exception:
+            mcp_tools_registered = 0
+        mcp_registration_ok = mcp_tools_registered > 0
+        # Vector acceleration is optional, so it is deliberately excluded from
+        # the health verdict.
+        healthy = fts5_ready and redaction_probe_passed and mcp_registration_ok
         _print_json(
             {
                 "database": db_path,
                 "schema_version": schema_version,
-                "fts5_ready": _fts5_ready(storage),
+                "retrieval_mode": (
+                    "hybrid" if storage.vec_available else "bm25-only"
+                ),
                 "sqlite_vec_available": storage.vec_available,
-                "redaction_probe_passed": _redaction_probe_passed(),
-                "mcp_tools_registered": _mcp_tool_count(create_server),
-                "semantic_judge_enabled": _serve_config_defaults().semantic_judge_enabled,
-                "status": "ready",
+                "sqlite_vec_status": storage.vec_status,
+                "fts5_ready": fts5_ready,
+                "redaction_probe_passed": redaction_probe_passed,
+                "mcp_tools_registered": mcp_tools_registered,
+                "semantic_judge_enabled": (
+                    _serve_config_defaults().semantic_judge_enabled
+                ),
+                "transport_default": "stdio",
+                "network_listener_started": False,
+                "status": "ready" if healthy else "not-ready",
             }
         )
-    return 0
+    finally:
+        storage.close()
+    return 0 if healthy else 1
 
 
 def _demo(db_path: str, *, semantic: bool = False, json_output: bool = False) -> int:
@@ -499,6 +601,75 @@ def _check(
             output["payload_sent_to_provider"] = judge is not None
         _print_json(output)
     return 2 if result.blocked else 0
+
+
+def _check_diff(
+    db_path: str,
+    *,
+    staged: bool,
+    diff_file: str | None,
+    scopes: str,
+    max_evidence_tokens: int | None,
+    enforce_constraints: bool,
+    output_format: str,
+) -> int:
+    """Check a staged or file diff against fresh anchored decisions.
+
+    The diff is never reindexed before evaluation, so a block still requires a
+    decision that is fresh in the already-indexed brain. Semantic judgment is
+    invoked only when explicitly enabled through the existing config/env path.
+    """
+    from mnemex.config import MnemexConfig
+    from mnemex.diff_guard import (
+        acquire_staged_diff,
+        acquisition_failure_report,
+        check_diff,
+        read_diff_file,
+    )
+    from mnemex.judge import create_semantic_judge
+    from mnemex.storage import Storage
+
+    config = MnemexConfig.from_env()
+    cap = (
+        config.max_evidence_tokens
+        if max_evidence_tokens is None
+        else min(max(max_evidence_tokens, 0), config.max_evidence_tokens)
+    )
+
+    if staged:
+        source_label = "staged"
+        source = acquire_staged_diff()
+    else:
+        source_label = "diff-file"
+        source = read_diff_file(diff_file or "")
+
+    if source.error is not None:
+        report = acquisition_failure_report(
+            source_label, source.error, extra_warnings=source.warnings
+        )
+        _emit_diff_report(report, output_format)
+        return report.exit_code()
+
+    with Storage(db_path) as storage:
+        report = check_diff(
+            storage,
+            source.text,
+            source=source_label,
+            scopes=_scope_values(scopes),
+            max_evidence_tokens=cap,
+            enforce_constraints=enforce_constraints,
+            judge=create_semantic_judge(config),
+            extra_warnings=source.warnings,
+        )
+    _emit_diff_report(report, output_format)
+    return report.exit_code()
+
+
+def _emit_diff_report(report: object, output_format: str) -> None:
+    if output_format == "markdown":
+        print(report.render_markdown())
+    else:
+        _print_json(report.as_dict())
 
 
 def _reconcile(db_path: str, memory_id: str, changed_symbol: str, diff: str) -> int:

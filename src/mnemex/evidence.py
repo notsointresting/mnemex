@@ -103,6 +103,15 @@ def build_guard_evidence(
             )
         )
 
+    # Governing invariants anchored elsewhere but scoped to this path (via an
+    # applies-to glob) rank above BM25 so a fresh one can be cited and block.
+    from mnemex.constraints import scoped_invariant_memories
+
+    selected.extend(
+        ("scoped-invariant", memory)
+        for memory in scoped_invariant_memories(storage, path, scopes=scope_values)
+    )
+
     query = " ".join(part for part in (Path(path).stem, clean_patch) if part)
     recalled = recall(
         storage,

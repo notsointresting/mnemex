@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 
-from mnemex.__main__ import _demo, _init, _serve, _serve_config, _why
+import pytest
+
+from mnemex.__main__ import _demo, _doctor, _init, _serve, _serve_config, _why
 from mnemex.anchors import remember
 from mnemex.storage import Node, Storage
 
@@ -127,3 +129,78 @@ def test_check_show_payload_prints_sanitized_evidence(tmp_path, capsys) -> None:
     assert secret_value not in out
     assert payload["payload_summary"]["redaction_count"] >= 1
     assert payload["payload_sent_to_provider"] is False
+
+
+
+_STABLE_VEC_STATUSES = {
+    "available",
+    "disabled-by-environment",
+    "package-not-installed",
+    "extension-loading-unsupported",
+    "extension-load-failed",
+}
+
+
+def test_doctor_reports_ready_in_core_no_vec_mode(monkeypatch, capsys) -> None:
+    monkeypatch.setenv("MNEMEX_NO_VEC", "1")
+    monkeypatch.delenv("MNEMEX_SEMANTIC_JUDGE_ENABLED", raising=False)
+
+    assert _doctor(":memory:") == 0
+    payload = json.loads(capsys.readouterr().out)
+
+    assert payload["status"] == "ready"
+    assert payload["retrieval_mode"] == "bm25-only"
+    assert payload["sqlite_vec_available"] is False
+    assert payload["sqlite_vec_status"] == "disabled-by-environment"
+    assert payload["fts5_ready"] is True
+    assert payload["redaction_probe_passed"] is True
+    assert payload["mcp_tools_registered"] >= 1
+    assert payload["semantic_judge_enabled"] is False
+    assert payload["transport_default"] == "stdio"
+    assert payload["network_listener_started"] is False
+
+
+def test_doctor_vector_status_is_always_a_stable_string(capsys) -> None:
+    # Whatever the host supports, the reported status is one stable token and
+    # never a raw exception message or a filesystem path.
+    exit_code = _doctor(":memory:")
+    payload = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 0  # missing vector support is not a doctor failure
+    assert payload["sqlite_vec_status"] in _STABLE_VEC_STATUSES
+    assert ":\\" not in payload["sqlite_vec_status"]
+    assert "Error" not in payload["sqlite_vec_status"]
+
+
+def test_doctor_reports_hybrid_when_vector_available(capsys) -> None:
+    with Storage() as probe:
+        available = probe.vec_available
+    if not available:
+        pytest.skip("sqlite-vec extension unavailable (no-ML mode)")
+
+    assert _doctor(":memory:") == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["retrieval_mode"] == "hybrid"
+    assert payload["sqlite_vec_available"] is True
+    assert payload["sqlite_vec_status"] == "available"
+
+
+def test_doctor_reports_missing_database(tmp_path, capsys) -> None:
+    missing = tmp_path / "does-not-exist.sqlite3"
+    assert _doctor(str(missing)) == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "missing"
+
+
+def test_offline_demo_is_blocked_in_core_no_vec_mode(monkeypatch, capsys) -> None:
+    # The deterministic block must be identical in core (no-vec) mode as it is
+    # in the vector-enabled default.
+    monkeypatch.setenv("MNEMEX_NO_VEC", "1")
+
+    assert _demo(":memory:", json_output=True) == 0
+    payload = json.loads(capsys.readouterr().out)
+
+    assert payload["mode"] == "offline"
+    assert payload["guard"]["blocked"] is True
+    assert payload["guard"]["verdict"] == "contradiction"
+    assert payload["old_decision_freshness_after_symbol_change"] == "stale"

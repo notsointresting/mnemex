@@ -97,7 +97,7 @@ def check_proposed_change(
     if enforce_constraints:
         from mnemex.constraints import enforce_constraints as find_violations
 
-        violations = find_violations(storage, patch_summary, scopes=scopes)
+        violations = find_violations(storage, patch_summary, path=path, scopes=scopes)
         if violations:
             violated_ids = tuple(sorted({item.memory_id for item in violations}))
             judgment = SemanticJudgment(

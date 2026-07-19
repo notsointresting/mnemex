@@ -1,6 +1,67 @@
 # mnemex
 
-**Local-first decision integrity for coding agents.**
+Memory systems retrieve relevant history. ADR tools check written rules.
+**Mnemex verifies whether a past decision still governs the code — by content
+hash, not by vibes — then gives the agent the minimum evidence for the current
+edit.**
+
+## Judge path — no key, no vector extra (under 60 seconds)
+
+Install the wheel, then run the deterministic offline demonstration. It needs
+no API key, embedding model, vector extension, or network access after install.
+
+```bash
+python -m pip install dist/mnemex-*.whl
+python -m mnemex demo --offline
+```
+
+Expected evidence includes a deterministic fresh-decision block:
+
+```text
+BLOCKED: Deterministic constraint violation: Forbidden phrase appears in the proposed change.
+Status       fresh at guard time
+```
+
+The same demo then records an explicit override, supersedes the decision,
+changes its anchor, and shows the resulting stale state. For structured output
+suited to an automated check, use `python -m mnemex demo --offline --json`.
+
+## The important distinction: violation vs. evolution
+
+The same guard should reject a fresh decision violation and stand aside when a
+legitimate change preserves the decision. The checked-in, deterministic replay
+fixture demonstrates both cases; it is not a live provider claim.
+
+| Fresh anchored decision | Proposed change | Result |
+|---|---|---|
+| Payment writes must be idempotent | Remove the idempotency check and retry after a ledger write | **BLOCKED** — `contradiction`, confidence `0.96` |
+| Payment writes must be idempotent | Extract the same idempotency check into a helper before the ledger write | **Advisory / allowed** — `compatible` |
+
+Run the fixture from [examples/violation-vs-evolution](examples/violation-vs-evolution/README.md).
+
+## Recorded-fixture scorecard
+
+<!-- codex-guard-scorecard:start -->
+**Synthetic recorded-fixture replay, not a live-agent outcome claim.** The
+numbers below are generated from
+[the checked-in results JSON](benchmarks/results/codex-guard-scorecard.json)
+and are locked against README drift by `tests/test_scorecard.py`.
+
+| Metric | Recorded fixture replay |
+|---|---:|
+| Decision violations caught | 2/2 |
+| False blocks on legitimate evolution | 0/2 |
+| Stale decisions correctly advisory | 1/1 |
+| Average recorded treatment context tokens / cap | 0/800 (1 observation) |
+
+Reproduce:
+
+```bash
+python tools/evaluate_codex_guard.py benchmarks/codex-guard-fixtures/example-results.synthetic.json --format json
+```
+<!-- codex-guard-scorecard:end -->
+
+## What it is
 
 Mnemex records a software decision against a code symbol and its content hash.
 When that code moves, changes, or disappears, the decision becomes reviewable
@@ -29,6 +90,12 @@ Core storage, indexing, retrieval, freshness, and deterministic constraints
 stay local in SQLite. The OpenAI semantic judge is optional and disabled by
 default.
 
+| Category | Recall | Enforcement | Knows when stale (content hash) | Local-only | Audited override |
+|---|---|---|---|---|---|
+| Mem0 / Zep-class memory | Yes | No | No | Varies | No |
+| adr-kit-class enforcement | Manual rules | Yes | No | Yes | Varies |
+| Mnemex | Bounded FTS5; optional vectors | Fresh, explicit decisions | Yes | Yes in core mode | Yes |
+
 ## Architecture
 
 ```text
@@ -50,13 +117,29 @@ MCP (stdio or local HTTP) + CLI + project brain bundles
 ## Quick Start From This Checkout
 
 Mnemex is installable from source and works without an embedding model, an
-OpenAI key, or network access after dependencies are installed.
+OpenAI key, or network access after dependencies are installed. The default
+install is **core mode**: FastMCP plus SQLite/FTS5 keyword (BM25) retrieval. The
+Mnemex core does not require or load the sqlite-vec native extension.
 
 ```bash
-python -m pip install .
+python -m pip install .                 # core: FTS5/BM25 retrieval
 mnemex init . --db .mnemex/mnemex.sqlite3
 mnemex doctor --db .mnemex/mnemex.sqlite3
 ```
+
+Optional extras layer onto the same single SQLite brain; there is no second
+database:
+
+```bash
+python -m pip install ".[vector]"      # optional hybrid vector retrieval (sqlite-vec)
+python -m pip install ".[openai]"      # optional GPT-5.6 semantic judge
+python -m pip install ".[vector,openai]"
+```
+
+`MNEMEX_NO_VEC=1` force-disables vector loading even when the extra is present.
+In core mode `mnemex doctor` reports `retrieval_mode: bm25-only` with a stable
+`sqlite_vec_status` such as `package-not-installed` or
+`disabled-by-environment`; missing vector support is not a doctor failure.
 
 For editable development:
 
@@ -124,6 +207,25 @@ command = "python"
 args = ["-m", "mnemex", "serve", "--db", ".mnemex/mnemex.sqlite3"]
 ```
 
+### Codex Guard Mode
+
+Add `--codex-guard` to opt in to a managed guard block in the project-root
+`AGENTS.md`:
+
+```bash
+mnemex init . --db .mnemex/mnemex.sqlite3 --codex-config .codex/config.toml --codex-guard
+```
+
+The write is explicit and idempotent. Mnemex inserts (or replaces) only the
+region between `<!-- mnemex:codex-guard:start -->` and
+`<!-- mnemex:codex-guard:end -->`, preserving all surrounding user-authored
+content; re-running the command is byte-identical. The block instructs the
+agent to call `context_for` before editing a path, `check_proposed_change`
+before a material change, and to record an explicit `override_decision_guard`
+rather than silently bypassing a block. It is an operating contract backed by
+MCP calls, not an unverified editor hook, and it never creates an override
+automatically.
+
 Mnemex speaks MCP over stdio, verified by an automated subprocess test that
 performs the JSON-RPC initialize handshake, lists tools, and invokes them
 (`tests/test_mcp_stdio_integration.py`). Codex is the intended primary client.
@@ -134,6 +236,7 @@ performs the JSON-RPC initialize handshake, lists tools, and invokes them
 mnemex init . --db project.sqlite3
 mnemex index ./src --db project.sqlite3
 mnemex check src/auth.py "Move sessions to the server" --db project.sqlite3 --enforce-constraints
+mnemex check-diff --staged --db project.sqlite3 --enforce-constraints
 mnemex why authenticate --db project.sqlite3
 mnemex review --db project.sqlite3
 mnemex dashboard --db project.sqlite3
@@ -160,6 +263,28 @@ is reported by `check_proposed_change`. Add `--enforce-constraints` to the CLI
 check workflow to block a fresh violation deterministically. Untagged decisions
 remain advisory. This separation keeps local rules inspectable and prevents a
 semantic provider from silently creating policy.
+
+### Staged-diff decision gate
+
+`mnemex check-diff` runs the same proposed-change guard over a real unified diff
+without executing project code. It takes either a staged diff
+(`--staged`, captured through `git diff --cached` with no shell and a timeout)
+or a file (`--diff-file change.diff` for deterministic input):
+
+```bash
+mnemex check-diff --staged --db project.sqlite3 --enforce-constraints
+mnemex check-diff --diff-file change.diff --db project.sqlite3 --format markdown
+```
+
+The diff is **never reindexed before it is checked**, so a block still requires
+a decision that is fresh in the already-indexed brain; every report is stamped
+`freshness_basis: indexed-brain` with an explicit before-change warning. Checks
+are file-scoped (the node schema stores `line_start`, so this does not claim
+hunk-to-symbol precision), paths that escape the project root are rejected, and
+binary diffs are skipped as advisory. The command exits `2` when a file is
+blocked, `1` when the diff could not be acquired or a file could not be
+evaluated, and `0` otherwise. The live Codex pre-edit MCP guard remains the
+authoritative path; `check-diff` is a documented second line of defense.
 
 ## Cross-Agent Continuity
 
@@ -213,25 +338,6 @@ this checkout.
 
 ## Evidence And Benchmarks
 
-### Codex Guard fixture replay
-
-<!-- codex-guard-scorecard:start -->
-**Synthetic recorded-fixture replay, not a live-agent outcome claim.** These figures replay the checked-in validator template; fixture commits are still placeholders. They must be replaced by human-recorded, commit-pinned runs before being presented as live Codex outcomes.
-
-| Metric | Recorded fixture replay |
-|---|---:|
-| Decision violations caught | 2/2 |
-| False blocks on legitimate evolution | 0/2 |
-| Stale decisions correctly advisory | 1/1 |
-| Average recorded treatment context tokens / cap | 0/800 (1 observation) |
-
-Reproduce:
-
-```bash
-python tools/evaluate_codex_guard.py benchmarks/codex-guard-fixtures/example-results.synthetic.json --format json
-```
-<!-- codex-guard-scorecard:end -->
-
 The checked-in benchmark is a **context-delivery microbenchmark**, not a claim
 about autonomous-agent quality or general token savings. It compares a bounded
 raw-file exploration baseline with Mnemex's session brief plus JIT contexts on
@@ -249,6 +355,11 @@ python -m pip install build
 python -m build --wheel
 python tools/build_release_bundle.py
 ```
+
+`build_release_bundle.py` writes the portable source zip and a
+`dist/SHA256SUMS.txt` covering the wheel and source zip (standard-library
+`hashlib`, coreutils format). The release ships a wheel, a source zip, and that
+checksum file only; it refuses to publish an unsigned standalone executable.
 
 External publishing to PyPI, npm, or GitHub Releases is a deployment action;
 it is not performed by this repository.
