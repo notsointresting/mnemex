@@ -207,8 +207,17 @@ Each writes the stdio launch entry `python -m mnemex serve --db
 <root>/.mnemex/mnemex.sqlite3` and prints a JSON report of the exact path it
 changed. An existing config that is not valid JSON is reported as an error and
 left untouched rather than overwritten. Restart the agent afterward so it
-reloads the MCP config. To install the CLI in isolation from this checkout, use
-`pipx install .` (or `uvx --from . mnemex ...`).
+reloads the MCP config.
+
+Install without cloning — straight from the repository (verified end-to-end),
+then run setup:
+
+```bash
+pip install git+https://github.com/notsointresting/mnemex
+# ephemeral, no install:
+#   uvx --from git+https://github.com/notsointresting/mnemex mnemex setup cursor
+mnemex setup cursor
+```
 
 ## Codex MCP Setup
 
